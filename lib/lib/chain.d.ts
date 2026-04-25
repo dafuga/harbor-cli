@@ -1,0 +1,44 @@
+export interface TableRowsResponse<T> {
+    rows: T[];
+    more: boolean | string;
+    next_key?: string;
+}
+export interface HarborServiceType {
+    id: number;
+    name: string;
+    enabled: boolean | number;
+    reward_weight: number | string;
+    epoch_budget: string;
+    base_provider_reward: string;
+    provider_fail_penalty: string;
+    oracle_agree_reward: string;
+    oracle_disagree_penalty: string;
+    oracle_miss_penalty: string;
+    min_provider_stake: string;
+    min_oracle_stake: string;
+    min_oracle_reports: number;
+    min_check_window_sec: number;
+}
+export interface HarborService {
+    id: number;
+    provider: string;
+    service_type: number;
+    segment_kind: number;
+    range_start: number;
+    range_end: number;
+    capacity_bytes: number | string;
+    active: boolean | number;
+    endpoint: string;
+    metadata: string;
+}
+export interface HarborState {
+    reward_pool: string;
+}
+export declare function normalizeUrl(url: string): string;
+export declare function getTableRows<T>(url: string, contract: string, table: string, options?: {
+    scope?: string;
+    limit?: number;
+}): Promise<TableRowsResponse<T>>;
+export declare function parseAssetAmount(asset: string): number;
+export declare function assetSymbol(asset: string): string;
+export declare function isActive(value: boolean | number): boolean;

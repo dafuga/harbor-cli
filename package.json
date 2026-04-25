@@ -1,0 +1,26 @@
+{
+  "name": "@harbor/cli",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Harbor command line tools for service agents and market operators.",
+  "license": "BSD-3-Clause",
+  "type": "module",
+  "bin": {
+    "harbor": "lib/index.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "check": "tsc --noEmit",
+    "test": "node --test lib/**/*.test.js"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "dependencies": {
+    "commander": "^12.1.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.12.12",
+    "typescript": "^5.4.5"
+  }
+}
