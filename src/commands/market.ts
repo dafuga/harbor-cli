@@ -9,23 +9,25 @@ import {
   parseAssetAmount,
 } from '../lib/chain.js'
 
-interface MarketOptions {
+export interface MarketOptions {
   url: string
   contract: string
   json?: boolean
+  best?: boolean
 }
 
-interface Opportunity {
+export interface Opportunity {
   id: number
   name: string
   activeProviders: number
   epochBudget: string
   estimatedProviderReward: string
+  estimatedProviderRewardAmount: number
   baseProviderReward: string
   status: string
 }
 
-async function loadMarket(options: MarketOptions) {
+export async function loadMarket(options: MarketOptions) {
   const [types, services, state] = await Promise.all([
     getTableRows<HarborServiceType>(options.url, options.contract, 'svctypes'),
     getTableRows<HarborService>(options.url, options.contract, 'services'),
@@ -39,33 +41,75 @@ async function loadMarket(options: MarketOptions) {
   }
 }
 
-function estimateReward(serviceType: HarborServiceType, services: HarborService[]): string {
-  const activeCount = services.filter(
+function activeProviderCount(serviceType: HarborServiceType, services: HarborService[]): number {
+  return services.filter(
     (service) => isActive(service.active) && service.service_type === Number(serviceType.id)
   ).length
+}
+
+function estimateRewardAmount(serviceType: HarborServiceType, activeCount: number): number {
   const participants = Math.max(activeCount, 1)
   const epochBudget = parseAssetAmount(serviceType.epoch_budget)
   const baseReward = parseAssetAmount(serviceType.base_provider_reward)
+  return Math.min(baseReward, epochBudget / participants)
+}
+
+function formatReward(amount: number, serviceType: HarborServiceType): string {
   const symbol = assetSymbol(serviceType.epoch_budget || serviceType.base_provider_reward)
-  const amount = Math.min(baseReward, epochBudget / participants)
   return `${amount.toFixed(4)} ${symbol}`
 }
 
-function buildOpportunities(types: HarborServiceType[], services: HarborService[]): Opportunity[] {
+export function buildOpportunities(types: HarborServiceType[], services: HarborService[]): Opportunity[] {
   return types.map((type) => {
-    const activeProviders = services.filter(
-      (service) => isActive(service.active) && service.service_type === Number(type.id)
-    ).length
+    const activeProviders = activeProviderCount(type, services)
+    const estimatedProviderRewardAmount = estimateRewardAmount(type, activeProviders)
     return {
       id: Number(type.id),
       name: type.service_name,
       activeProviders,
       epochBudget: type.epoch_budget,
-      estimatedProviderReward: estimateReward(type, services),
+      estimatedProviderReward: formatReward(estimatedProviderRewardAmount, type),
+      estimatedProviderRewardAmount,
       baseProviderReward: type.base_provider_reward,
       status: isActive(type.enabled) ? 'open' : 'disabled',
     }
   })
+}
+
+export function bestOpportunity(opportunities: Opportunity[]): Opportunity | undefined {
+  return opportunities
+    .filter((opportunity) => opportunity.status === 'open')
+    .sort((a, b) => {
+      const rewardDiff = b.estimatedProviderRewardAmount - a.estimatedProviderRewardAmount
+      if (rewardDiff !== 0) {
+        return rewardDiff
+      }
+
+      const budgetDiff = parseAssetAmount(b.epochBudget) - parseAssetAmount(a.epochBudget)
+      if (budgetDiff !== 0) {
+        return budgetDiff
+      }
+
+      const providerDiff = a.activeProviders - b.activeProviders
+      if (providerDiff !== 0) {
+        return providerDiff
+      }
+
+      return a.id - b.id
+    })[0]
+}
+
+function printableOpportunity(opportunity: Opportunity) {
+  const {estimatedProviderRewardAmount: _estimatedProviderRewardAmount, ...printable} = opportunity
+  return printable
+}
+
+function printableOpportunities(opportunities: Opportunity[]) {
+  return opportunities.map(printableOpportunity)
+}
+
+function recommendation(opportunity: Opportunity): string {
+  return `Best opportunity: run ${opportunity.name} (service type ${opportunity.id}) for an estimated ${opportunity.estimatedProviderReward} per passing check.`
 }
 
 export function createMarketCommand(): Command {
@@ -78,17 +122,34 @@ export function createMarketCommand(): Command {
     .option('-u, --url <url>', 'Harbor chain API URL', process.env.HARBOR_API_URL ?? 'http://127.0.0.1:8888')
     .option('-c, --contract <account>', 'service market contract account', process.env.HARBOR_MARKET_CONTRACT ?? 'svcmarket')
     .option('--json', 'print JSON')
+    .option('--best', 'show the best current opportunity for one agent')
     .action(async (options: MarketOptions) => {
       const {types, services, state} = await loadMarket(options)
       const opportunities = buildOpportunities(types, services)
+      const best = bestOpportunity(opportunities)
 
       if (options.json) {
-        console.log(JSON.stringify({rewardPool: state?.reward_pool, opportunities}, null, 2))
+        console.log(JSON.stringify({
+          rewardPool: state?.reward_pool,
+          best: best ? printableOpportunity(best) : null,
+          opportunities: printableOpportunities(opportunities),
+        }, null, 2))
         return
       }
 
       console.log(`Reward pool: ${state?.reward_pool ?? 'unknown'}`)
-      console.table(opportunities)
+      if (options.best) {
+        if (!best) {
+          console.log('No open opportunities.')
+          return
+        }
+
+        console.log(recommendation(best))
+        console.table([printableOpportunity(best)])
+        return
+      }
+
+      console.table(printableOpportunities(opportunities))
     })
 
   market
