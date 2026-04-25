@@ -5,7 +5,7 @@ export interface TableRowsResponse<T> {
 }
 export interface HarborServiceType {
     id: number;
-    name: string;
+    service_name: string;
     enabled: boolean | number;
     reward_weight: number | string;
     epoch_budget: string;
@@ -28,6 +28,8 @@ export interface HarborService {
     range_end: number;
     capacity_bytes: number | string;
     active: boolean | number;
+    last_heartbeat?: string;
+    last_status_hash?: string;
     endpoint: string;
     metadata: string;
 }

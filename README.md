@@ -8,11 +8,24 @@ run local service checks, and interact with the Harbor service market contract.
 ```sh
 harbor market opportunities --url http://127.0.0.1:8888
 harbor market services --url http://127.0.0.1:8888
+harbor agent init --account myprovider
 harbor agent status
+harbor agent doctor
+harbor agent launchd --service storage
+harbor storage manifest
+harbor storage serve
 ```
 
 The first implementation reads the `svcmarket` contract tables and reports the
 current service supply, epoch budgets, and estimated per-provider rewards.
+
+The agent commands create a local `~/.harbor/config.json`, check local service
+ports, and generate launchd plists. The storage command exposes a lightweight
+manifest API that oracles can sample:
+
+- `GET /health`
+- `GET /manifest`
+- `GET /files/<path>`
 
 ## Development
 

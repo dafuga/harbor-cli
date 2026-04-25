@@ -58,7 +58,7 @@ function buildOpportunities(types: HarborServiceType[], services: HarborService[
     ).length
     return {
       id: Number(type.id),
-      name: type.name,
+      name: type.service_name,
       activeProviders,
       epochBudget: type.epoch_budget,
       estimatedProviderReward: estimateReward(type, services),

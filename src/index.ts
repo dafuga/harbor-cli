@@ -2,6 +2,7 @@
 import {Command} from 'commander'
 import {createAgentCommand} from './commands/agent.js'
 import {createMarketCommand} from './commands/market.js'
+import {createStorageCommand} from './commands/storage.js'
 
 const program = new Command()
 
@@ -12,5 +13,6 @@ program
 
 program.addCommand(createMarketCommand())
 program.addCommand(createAgentCommand())
+program.addCommand(createStorageCommand())
 
 program.parse(process.argv)
