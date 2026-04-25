@@ -9,6 +9,9 @@ export interface MarketOptions {
 export interface Opportunity {
     id: number;
     name: string;
+    duties: string;
+    mustNot: string;
+    oracleChecks: string;
     activeProviders: number;
     epochBudget: string;
     estimatedProviderReward: string;

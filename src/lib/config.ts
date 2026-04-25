@@ -16,7 +16,9 @@ export interface HarborAgentConfig {
   marketContract: string
   storageDir: string
   services: {
+    blockProducer: HarborAgentServiceConfig
     chainApi: HarborAgentServiceConfig
+    traceApi: HarborAgentServiceConfig
     roboHistory: HarborAgentServiceConfig
     storageManifest: HarborAgentServiceConfig
   }
@@ -41,7 +43,9 @@ export function createDefaultConfig(account: string): HarborAgentConfig {
     marketContract: process.env.HARBOR_MARKET_CONTRACT ?? 'svcmarket',
     storageDir: defaultStorageDir(),
     services: {
+      blockProducer: {enabled: false, command: 'nodeos'},
       chainApi: {enabled: true, port: 8888, command: 'nodeos'},
+      traceApi: {enabled: false, port: 8889, command: 'nodeos'},
       roboHistory: {enabled: false, port: 8080},
       storageManifest: {enabled: true, port: 9090},
     },
@@ -57,7 +61,10 @@ export async function ensureHarborDirs(config: HarborAgentConfig): Promise<void>
 
 export async function loadConfig(configPath = defaultConfigPath()): Promise<HarborAgentConfig> {
   const raw = await fs.readFile(configPath, 'utf8')
-  return JSON.parse(raw) as HarborAgentConfig
+  const config = JSON.parse(raw) as HarborAgentConfig
+  config.services.blockProducer ??= {enabled: false, command: 'nodeos'}
+  config.services.traceApi ??= {enabled: false, port: 8889, command: 'nodeos'}
+  return config
 }
 
 export async function saveConfig(config: HarborAgentConfig, configPath = defaultConfigPath()): Promise<void> {

@@ -6,7 +6,9 @@ import {renderLaunchdPlist} from '../lib/launchd.js'
 import {canConnect} from '../lib/ports.js'
 
 interface AgentStatusOptions {
+  bpPort: string
   apiPort: string
+  tracePort: string
   roboPort: string
   storagePort: string
   config?: string
@@ -23,7 +25,7 @@ interface AgentInitOptions {
 
 interface LaunchdOptions {
   config?: string
-  service: 'storage' | 'chain-api' | 'robo-history'
+  service: 'storage' | 'bp' | 'chain-api' | 'trace-api' | 'robo-history'
   output?: string
 }
 
@@ -83,17 +85,21 @@ export function createAgentCommand(): Command {
   agent
     .command('status')
     .description('Check local Harbor service ports')
-    .option('--api-port <port>', 'Spring chain API port', '8888')
+    .option('--bp-port <port>', 'block producer p2p port', '9876')
+    .option('--api-port <port>', 'Harbor chain API port', '8888')
+    .option('--trace-port <port>', 'Harbor trace API port', '8889')
     .option('--robo-port <port>', 'Roborovski API port', '8080')
     .option('--storage-port <port>', 'Harbor storage manifest port', '9090')
     .option('--config <path>', 'config path', defaultConfigPath())
     .action(async (options: AgentStatusOptions) => {
       const config = await loadOptionalConfig(options.config)
       const checks = [
+        {service: 'bp', port: config?.services.blockProducer.port ?? Number(options.bpPort)},
         {service: 'chain-api', port: config?.services.chainApi.port ?? Number(options.apiPort)},
+        {service: 'trace-api', port: config?.services.traceApi.port ?? Number(options.tracePort)},
         {service: 'robo-history', port: config?.services.roboHistory.port ?? Number(options.roboPort)},
         {service: 'storage-manifest', port: config?.services.storageManifest.port ?? Number(options.storagePort)},
-      ]
+      ].filter((check) => Number.isFinite(check.port))
 
       const results = await Promise.all(
         checks.map(async (check) => ({
@@ -116,7 +122,9 @@ export function createAgentCommand(): Command {
       const checks = [
         {check: 'config', value: options.config, ok: true},
         {check: 'storage-dir', value: config.storageDir, ok: true},
+        {check: 'bp-port', value: String(config.services.blockProducer.port ?? 'unconfigured'), ok: config.services.blockProducer.port ? await canConnect(config.services.blockProducer.port) : false},
         {check: 'chain-api-port', value: String(config.services.chainApi.port), ok: await canConnect(config.services.chainApi.port ?? 8888)},
+        {check: 'trace-api-port', value: String(config.services.traceApi.port), ok: await canConnect(config.services.traceApi.port ?? 8889)},
         {check: 'robo-history-port', value: String(config.services.roboHistory.port), ok: await canConnect(config.services.roboHistory.port ?? 8080)},
         {check: 'storage-manifest-port', value: String(config.services.storageManifest.port), ok: await canConnect(config.services.storageManifest.port ?? 9090)},
       ]
@@ -126,7 +134,7 @@ export function createAgentCommand(): Command {
   agent
     .command('launchd')
     .description('Write a launchd plist for a Harbor service')
-    .requiredOption('-s, --service <service>', 'storage, chain-api, or robo-history')
+    .requiredOption('-s, --service <service>', 'bp, chain-api, trace-api, storage, or robo-history')
     .option('--config <path>', 'config path', defaultConfigPath())
     .option('-o, --output <path>', 'output plist path')
     .action(async (options: LaunchdOptions) => {
@@ -144,6 +152,15 @@ export function createAgentCommand(): Command {
           workingDirectory: harborHome(),
         })
         filename = 'io.harbor.storage.plist'
+      } else if (options.service === 'bp') {
+        const service = config.services.blockProducer
+        plist = renderLaunchdPlist({
+          label: 'io.harbor.bp',
+          command: service.command ?? 'nodeos',
+          args: service.args ?? [],
+          workingDirectory: service.workingDirectory,
+        })
+        filename = 'io.harbor.bp.plist'
       } else if (options.service === 'chain-api') {
         const service = config.services.chainApi
         plist = renderLaunchdPlist({
@@ -153,6 +170,15 @@ export function createAgentCommand(): Command {
           workingDirectory: service.workingDirectory,
         })
         filename = 'io.harbor.chain-api.plist'
+      } else if (options.service === 'trace-api') {
+        const service = config.services.traceApi
+        plist = renderLaunchdPlist({
+          label: 'io.harbor.trace-api',
+          command: service.command ?? 'nodeos',
+          args: service.args ?? [],
+          workingDirectory: service.workingDirectory,
+        })
+        filename = 'io.harbor.trace-api.plist'
       } else if (options.service === 'robo-history') {
         const service = config.services.roboHistory
         if (!service.command) {

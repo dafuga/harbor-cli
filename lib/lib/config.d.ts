@@ -11,7 +11,9 @@ export interface HarborAgentConfig {
     marketContract: string;
     storageDir: string;
     services: {
+        blockProducer: HarborAgentServiceConfig;
         chainApi: HarborAgentServiceConfig;
+        traceApi: HarborAgentServiceConfig;
         roboHistory: HarborAgentServiceConfig;
         storageManifest: HarborAgentServiceConfig;
     };
