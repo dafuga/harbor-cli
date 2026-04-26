@@ -97,6 +97,11 @@ const SERVICE_GUIDANCE: Record<string, ServiceGuidance> = {
     mustNot: 'Do not claim relayer rewards without configured route liveness.',
     oracleChecks: 'Relay liveness, packet proof sampling, route freshness.',
   },
+  verifier: {
+    duties: 'Verify that registered Harbor agents perform their declared duties.',
+    mustNot: 'Do not act as a price oracle or claim provider work being verified under this service.',
+    oracleChecks: 'Endpoint probes, storage replica audits, service-boundary checks, signed reports.',
+  },
 }
 
 const DEFAULT_GUIDANCE: ServiceGuidance = {

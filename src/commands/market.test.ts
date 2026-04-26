@@ -73,6 +73,7 @@ test('opportunities describe narrow service duties', () => {
       serviceType(10, 'histtx', '4.0000 SYS'),
       serviceType(11, 'histapi', '4.0000 SYS'),
       serviceType(6, 'p2pseed', '4.0000 SYS'),
+      serviceType(13, 'verifier', '4.0000 SYS'),
     ],
     []
   )
@@ -85,6 +86,7 @@ test('opportunities describe narrow service duties', () => {
   const historyTx = opportunities.find((opportunity) => opportunity.name === 'histtx')
   const historyApi = opportunities.find((opportunity) => opportunity.name === 'histapi')
   const p2pSeed = opportunities.find((opportunity) => opportunity.name === 'p2pseed')
+  const verifier = opportunities.find((opportunity) => opportunity.name === 'verifier')
 
   assert.match(bp?.duties ?? '', /Produce and validate blocks only/)
   assert.match(bp?.mustNot ?? '', /Do not serve chain API/)
@@ -97,4 +99,6 @@ test('opportunities describe narrow service duties', () => {
   assert.match(historyTx?.duties ?? '', /transaction-id lookups/)
   assert.match(historyApi?.mustNot ?? '', /separate range registration/)
   assert.match(p2pSeed?.duties ?? '', /relay blocks\/transactions/)
+  assert.match(verifier?.duties ?? '', /registered Harbor agents/)
+  assert.match(verifier?.oracleChecks ?? '', /storage replica audits/)
 })

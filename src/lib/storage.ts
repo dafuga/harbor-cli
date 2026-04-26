@@ -9,6 +9,30 @@ export interface StorageManifestEntry {
   sha256: string
 }
 
+export interface StoreObjectOptions {
+  root: string
+  file: string
+  encrypt?: boolean
+  privateKey?: string
+  metadata?: string
+}
+
+export interface StoredObjectResult {
+  sourcePath: string
+  storedPath: string
+  contentHash: string
+  sourceHash: string
+  bytes: number
+  encrypted: boolean
+  encryptionKeyHash: string
+  metadata: string
+  registerAction: {
+    contract: string
+    action: string
+    data: [string, string, number, boolean, string, string]
+  }
+}
+
 async function hashFile(filePath: string): Promise<string> {
   const hash = crypto.createHash('sha256')
   const handle = await fs.open(filePath, 'r')
@@ -20,6 +44,70 @@ async function hashFile(filePath: string): Promise<string> {
     await handle.close()
   }
   return hash.digest('hex')
+}
+
+function sha256(bytes: Buffer | string): string {
+  return crypto.createHash('sha256').update(bytes).digest('hex')
+}
+
+function encryptBytes(bytes: Buffer, privateKey: string): Buffer {
+  const key = crypto.createHash('sha256').update(privateKey).digest()
+  const iv = crypto.randomBytes(12)
+  const cipher = crypto.createCipheriv('aes-256-gcm', key, iv)
+  const ciphertext = Buffer.concat([cipher.update(bytes), cipher.final()])
+  const tag = cipher.getAuthTag()
+  return Buffer.from(JSON.stringify({
+    version: 1,
+    algorithm: 'aes-256-gcm',
+    iv: iv.toString('base64'),
+    tag: tag.toString('base64'),
+    ciphertext: ciphertext.toString('base64'),
+  }))
+}
+
+function objectPath(root: string, contentHash: string): string {
+  return path.join(root, 'objects', contentHash.slice(0, 2), contentHash)
+}
+
+export async function storeObject(options: StoreObjectOptions): Promise<StoredObjectResult> {
+  if (options.encrypt && !options.privateKey) {
+    throw new Error('--private-key is required when --encrypt is set')
+  }
+
+  const sourcePath = path.resolve(options.file)
+  const source = await fs.readFile(sourcePath)
+  const sourceHash = sha256(source)
+  const encrypted = Boolean(options.encrypt)
+  const storedBytes = encrypted ? encryptBytes(source, options.privateKey ?? '') : source
+  const contentHash = sha256(storedBytes)
+  const storedPath = objectPath(options.root, contentHash)
+  await fs.mkdir(path.dirname(storedPath), {recursive: true})
+  await fs.writeFile(storedPath, storedBytes)
+
+  const metadata = options.metadata ?? path.basename(sourcePath)
+  const encryptionKeyHash = encrypted ? sha256(options.privateKey ?? '') : '0'.repeat(64)
+  return {
+    sourcePath,
+    storedPath,
+    contentHash,
+    sourceHash,
+    bytes: storedBytes.length,
+    encrypted,
+    encryptionKeyHash,
+    metadata,
+    registerAction: {
+      contract: 'harborstore',
+      action: 'putobject',
+      data: [
+        '<owner>',
+        contentHash,
+        storedBytes.length,
+        encrypted,
+        encryptionKeyHash,
+        metadata,
+      ],
+    },
+  }
 }
 
 async function walk(root: string, current = root): Promise<StorageManifestEntry[]> {

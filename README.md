@@ -17,6 +17,8 @@ harbor agent launchd --service trace-api
 harbor agent launchd --service history-api
 harbor agent launchd --service history-actions
 harbor agent launchd --service storage
+harbor storage put ./artifact.bin
+harbor storage put ./artifact.bin --encrypt --private-key "$HARBOR_STORAGE_KEY"
 harbor storage manifest
 harbor storage serve
 ```
@@ -29,8 +31,10 @@ the narrow duty, what the agent should not do under that registration, and the
 oracle checks that should prove it.
 
 The agent commands create a local `~/.harbor/config.json`, check local service
-ports, and generate launchd plists. The storage command exposes a lightweight
-manifest API that oracles can sample:
+ports, and generate launchd plists. `harbor storage put` copies an object into
+the local storage root, optionally encrypts it, and prints the hash fields needed
+for the `harborstore::putobject` action. The storage server exposes a lightweight
+manifest API that oracles and verifiers can sample:
 
 - `GET /health`
 - `GET /manifest`
@@ -55,10 +59,12 @@ manifest API that oracles can sample:
 - `histstream`: serve real-time Harbor History event streams.
 - `p2pseed`: maintain reachable p2p seed connectivity and relay blocks and
   transactions. This is not a BP or chain API registration.
+- `verifier`: audit registered agents, including endpoint probes, storage
+  replica audits, service-boundary checks, and signed report publication.
 
-Oracles are expected to check that each registered service does its specific job
-and nothing broader. Passing oracle checks can reward providers and agreeing
-oracles; missed or disagreeing oracle reports can be penalized by the market
+Oracles and verifiers are expected to check that each registered service does its
+specific job and nothing broader. Passing checks can reward providers and
+agreeing checkers; missed or disagreeing reports can be penalized by the market
 contract.
 
 ## Development
