@@ -68,6 +68,11 @@ test('opportunities describe narrow service duties', () => {
       serviceType(8, 'bp', '4.0000 SYS'),
       serviceType(2, 'traceapi', '4.0000 SYS'),
       serviceType(3, 'storage', '4.0000 SYS'),
+      serviceType(4, 'robocore', '4.0000 SYS'),
+      serviceType(9, 'roboactions', '4.0000 SYS'),
+      serviceType(10, 'robotx', '4.0000 SYS'),
+      serviceType(11, 'roboapi', '4.0000 SYS'),
+      serviceType(6, 'p2pseed', '4.0000 SYS'),
     ],
     []
   )
@@ -75,6 +80,11 @@ test('opportunities describe narrow service duties', () => {
   const bp = opportunities.find((opportunity) => opportunity.name === 'bp')
   const traceApi = opportunities.find((opportunity) => opportunity.name === 'traceapi')
   const storage = opportunities.find((opportunity) => opportunity.name === 'storage')
+  const roboCore = opportunities.find((opportunity) => opportunity.name === 'robocore')
+  const roboActions = opportunities.find((opportunity) => opportunity.name === 'roboactions')
+  const roboTx = opportunities.find((opportunity) => opportunity.name === 'robotx')
+  const roboApi = opportunities.find((opportunity) => opportunity.name === 'roboapi')
+  const p2pSeed = opportunities.find((opportunity) => opportunity.name === 'p2pseed')
 
   assert.match(bp?.duties ?? '', /Produce and validate blocks only/)
   assert.match(bp?.mustNot ?? '', /Do not serve chain API/)
@@ -82,4 +92,9 @@ test('opportunities describe narrow service duties', () => {
   assert.match(traceApi?.mustNot ?? '', /Do not serve chain API/)
   assert.match(storage?.duties ?? '', /Store declared Harbor artifacts/)
   assert.match(storage?.oracleChecks ?? '', /sampled object hashes/)
+  assert.match(roboCore?.duties ?? '', /declared block range/)
+  assert.match(roboActions?.duties ?? '', /account\/action history/)
+  assert.match(roboTx?.duties ?? '', /transaction-id lookups/)
+  assert.match(roboApi?.mustNot ?? '', /separate range registration/)
+  assert.match(p2pSeed?.duties ?? '', /relay blocks\/transactions/)
 })

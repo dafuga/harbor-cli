@@ -19,7 +19,11 @@ export interface HarborAgentConfig {
     blockProducer: HarborAgentServiceConfig
     chainApi: HarborAgentServiceConfig
     traceApi: HarborAgentServiceConfig
-    roboHistory: HarborAgentServiceConfig
+    roboCore: HarborAgentServiceConfig
+    roboActions: HarborAgentServiceConfig
+    roboTx: HarborAgentServiceConfig
+    roboApi: HarborAgentServiceConfig
+    roboStream: HarborAgentServiceConfig
     storageManifest: HarborAgentServiceConfig
   }
 }
@@ -46,7 +50,11 @@ export function createDefaultConfig(account: string): HarborAgentConfig {
       blockProducer: {enabled: false, command: 'nodeos'},
       chainApi: {enabled: true, port: 8888, command: 'nodeos'},
       traceApi: {enabled: false, port: 8889, command: 'nodeos'},
-      roboHistory: {enabled: false, port: 8080},
+      roboCore: {enabled: false},
+      roboActions: {enabled: false, port: 8081},
+      roboTx: {enabled: false, port: 8082},
+      roboApi: {enabled: false, port: 8080},
+      roboStream: {enabled: false, port: 8083},
       storageManifest: {enabled: true, port: 9090},
     },
   }
@@ -62,8 +70,14 @@ export async function ensureHarborDirs(config: HarborAgentConfig): Promise<void>
 export async function loadConfig(configPath = defaultConfigPath()): Promise<HarborAgentConfig> {
   const raw = await fs.readFile(configPath, 'utf8')
   const config = JSON.parse(raw) as HarborAgentConfig
+  const legacyServices = config.services as typeof config.services & {roboHistory?: HarborAgentServiceConfig}
   config.services.blockProducer ??= {enabled: false, command: 'nodeos'}
   config.services.traceApi ??= {enabled: false, port: 8889, command: 'nodeos'}
+  config.services.roboCore ??= {enabled: false}
+  config.services.roboActions ??= {enabled: false, port: 8081}
+  config.services.roboTx ??= {enabled: false, port: 8082}
+  config.services.roboApi ??= legacyServices.roboHistory ?? {enabled: false, port: 8080}
+  config.services.roboStream ??= {enabled: false, port: 8083}
   return config
 }
 

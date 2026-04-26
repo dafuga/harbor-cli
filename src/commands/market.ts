@@ -57,10 +57,30 @@ const SERVICE_GUIDANCE: Record<string, ServiceGuidance> = {
     mustNot: 'Do not claim chain API, trace API, or BP duties under this service.',
     oracleChecks: 'Manifest integrity, sampled object hashes, range coverage, freshness.',
   },
-  robo: {
-    duties: 'Run the Roborovski history API as a distinct history service.',
-    mustNot: 'Do not claim chain API or trace API coverage unless separately registered.',
-    oracleChecks: 'History API availability, sampled history responses, freshness.',
+  robocore: {
+    duties: 'Ingest trace data and build Roborovski history slices for a declared block range.',
+    mustNot: 'Do not claim public API routing or query service unless separately registered.',
+    oracleChecks: 'Slice manifest integrity, sampled range coverage, freshness.',
+  },
+  roboactions: {
+    duties: 'Serve account/action history queries for a declared block range.',
+    mustNot: 'Do not claim txid lookup, API routing, or core slice storage unless separately registered.',
+    oracleChecks: 'Sampled account/action responses, block-range boundaries, freshness.',
+  },
+  robotx: {
+    duties: 'Serve transaction-id lookups for a declared block range.',
+    mustNot: 'Do not claim account/action indexing or API routing unless separately registered.',
+    oracleChecks: 'Sampled txid responses, block-range boundaries, freshness.',
+  },
+  roboapi: {
+    duties: 'Serve the Roborovski-compatible API edge and route range queries to backing indexes.',
+    mustNot: 'Do not claim storage or indexing work without a separate range registration.',
+    oracleChecks: 'Endpoint availability, routing correctness, latency.',
+  },
+  robostream: {
+    duties: 'Serve real-time Roborovski history/event streams.',
+    mustNot: 'Do not claim archive range coverage from stream availability alone.',
+    oracleChecks: 'Stream liveness, head freshness, sampled event delivery.',
   },
   snapshot: {
     duties: 'Publish recent restorable chain snapshots.',
@@ -68,9 +88,9 @@ const SERVICE_GUIDANCE: Record<string, ServiceGuidance> = {
     oracleChecks: 'Snapshot manifest, download sample, block-height freshness.',
   },
   p2pseed: {
-    duties: 'Maintain reachable p2p seed connectivity.',
-    mustNot: 'Do not claim BP rewards for merely serving p2p seed connectivity.',
-    oracleChecks: 'P2P dial, handshake, advertised peer freshness.',
+    duties: 'Maintain reachable p2p seed connectivity and relay blocks/transactions.',
+    mustNot: 'Do not claim BP rewards without producing blocks or API rewards for p2p connectivity.',
+    oracleChecks: 'P2P dial, handshake, head freshness, propagation sampling.',
   },
   ibcrelayer: {
     duties: 'Relay configured IBC packets.',

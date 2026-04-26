@@ -9,7 +9,11 @@ interface AgentStatusOptions {
   bpPort: string
   apiPort: string
   tracePort: string
-  roboPort: string
+  roboCorePort?: string
+  roboActionsPort: string
+  roboTxPort: string
+  roboApiPort: string
+  roboStreamPort: string
   storagePort: string
   config?: string
 }
@@ -25,7 +29,16 @@ interface AgentInitOptions {
 
 interface LaunchdOptions {
   config?: string
-  service: 'storage' | 'bp' | 'chain-api' | 'trace-api' | 'robo-history'
+  service:
+    | 'storage'
+    | 'bp'
+    | 'chain-api'
+    | 'trace-api'
+    | 'robo-core'
+    | 'robo-actions'
+    | 'robo-tx'
+    | 'robo-api'
+    | 'robo-stream'
   output?: string
 }
 
@@ -35,6 +48,17 @@ async function loadOptionalConfig(configPath?: string) {
   } catch {
     return null
   }
+}
+
+function configuredCommand(name: string, service: {command?: string}): string {
+  if (!service.command) {
+    throw new Error(`${name} command is not configured`)
+  }
+  return service.command
+}
+
+function hasPort(check: {service: string; port?: number}): check is {service: string; port: number} {
+  return Number.isFinite(check.port)
 }
 
 export function createAgentCommand(): Command {
@@ -88,7 +112,11 @@ export function createAgentCommand(): Command {
     .option('--bp-port <port>', 'block producer p2p port', '9876')
     .option('--api-port <port>', 'Harbor chain API port', '8888')
     .option('--trace-port <port>', 'Harbor trace API port', '8889')
-    .option('--robo-port <port>', 'Roborovski API port', '8080')
+    .option('--robo-core-port <port>', 'Roborovski core/indexing status port')
+    .option('--robo-actions-port <port>', 'Roborovski actions API port', '8081')
+    .option('--robo-tx-port <port>', 'Roborovski tx lookup API port', '8082')
+    .option('--robo-api-port <port>', 'Roborovski API router port', '8080')
+    .option('--robo-stream-port <port>', 'Roborovski stream API port', '8083')
     .option('--storage-port <port>', 'Harbor storage manifest port', '9090')
     .option('--config <path>', 'config path', defaultConfigPath())
     .action(async (options: AgentStatusOptions) => {
@@ -97,9 +125,13 @@ export function createAgentCommand(): Command {
         {service: 'bp', port: config?.services.blockProducer.port ?? Number(options.bpPort)},
         {service: 'chain-api', port: config?.services.chainApi.port ?? Number(options.apiPort)},
         {service: 'trace-api', port: config?.services.traceApi.port ?? Number(options.tracePort)},
-        {service: 'robo-history', port: config?.services.roboHistory.port ?? Number(options.roboPort)},
+        {service: 'robo-core', port: config?.services.roboCore.port ?? (options.roboCorePort ? Number(options.roboCorePort) : undefined)},
+        {service: 'robo-actions', port: config?.services.roboActions.port ?? Number(options.roboActionsPort)},
+        {service: 'robo-tx', port: config?.services.roboTx.port ?? Number(options.roboTxPort)},
+        {service: 'robo-api', port: config?.services.roboApi.port ?? Number(options.roboApiPort)},
+        {service: 'robo-stream', port: config?.services.roboStream.port ?? Number(options.roboStreamPort)},
         {service: 'storage-manifest', port: config?.services.storageManifest.port ?? Number(options.storagePort)},
-      ].filter((check) => Number.isFinite(check.port))
+      ].filter(hasPort)
 
       const results = await Promise.all(
         checks.map(async (check) => ({
@@ -125,7 +157,11 @@ export function createAgentCommand(): Command {
         {check: 'bp-port', value: String(config.services.blockProducer.port ?? 'unconfigured'), ok: config.services.blockProducer.port ? await canConnect(config.services.blockProducer.port) : false},
         {check: 'chain-api-port', value: String(config.services.chainApi.port), ok: await canConnect(config.services.chainApi.port ?? 8888)},
         {check: 'trace-api-port', value: String(config.services.traceApi.port), ok: await canConnect(config.services.traceApi.port ?? 8889)},
-        {check: 'robo-history-port', value: String(config.services.roboHistory.port), ok: await canConnect(config.services.roboHistory.port ?? 8080)},
+        {check: 'robo-core-port', value: String(config.services.roboCore.port ?? 'unconfigured'), ok: config.services.roboCore.port ? await canConnect(config.services.roboCore.port) : false},
+        {check: 'robo-actions-port', value: String(config.services.roboActions.port), ok: await canConnect(config.services.roboActions.port ?? 8081)},
+        {check: 'robo-tx-port', value: String(config.services.roboTx.port), ok: await canConnect(config.services.roboTx.port ?? 8082)},
+        {check: 'robo-api-port', value: String(config.services.roboApi.port), ok: await canConnect(config.services.roboApi.port ?? 8080)},
+        {check: 'robo-stream-port', value: String(config.services.roboStream.port), ok: await canConnect(config.services.roboStream.port ?? 8083)},
         {check: 'storage-manifest-port', value: String(config.services.storageManifest.port), ok: await canConnect(config.services.storageManifest.port ?? 9090)},
       ]
       console.table(checks)
@@ -134,7 +170,7 @@ export function createAgentCommand(): Command {
   agent
     .command('launchd')
     .description('Write a launchd plist for a Harbor service')
-    .requiredOption('-s, --service <service>', 'bp, chain-api, trace-api, storage, or robo-history')
+    .requiredOption('-s, --service <service>', 'bp, chain-api, trace-api, storage, robo-core, robo-actions, robo-tx, robo-api, or robo-stream')
     .option('--config <path>', 'config path', defaultConfigPath())
     .option('-o, --output <path>', 'output plist path')
     .action(async (options: LaunchdOptions) => {
@@ -179,18 +215,56 @@ export function createAgentCommand(): Command {
           workingDirectory: service.workingDirectory,
         })
         filename = 'io.harbor.trace-api.plist'
-      } else if (options.service === 'robo-history') {
-        const service = config.services.roboHistory
-        if (!service.command) {
-          throw new Error('robo-history command is not configured')
-        }
+      } else if (options.service === 'robo-core') {
+        const service = config.services.roboCore
+        const command = configuredCommand('robo-core', service)
         plist = renderLaunchdPlist({
-          label: 'io.harbor.robo-history',
-          command: service.command,
+          label: 'io.harbor.robo-core',
+          command,
           args: service.args ?? [],
           workingDirectory: service.workingDirectory,
         })
-        filename = 'io.harbor.robo-history.plist'
+        filename = 'io.harbor.robo-core.plist'
+      } else if (options.service === 'robo-actions') {
+        const service = config.services.roboActions
+        const command = configuredCommand('robo-actions', service)
+        plist = renderLaunchdPlist({
+          label: 'io.harbor.robo-actions',
+          command,
+          args: service.args ?? [],
+          workingDirectory: service.workingDirectory,
+        })
+        filename = 'io.harbor.robo-actions.plist'
+      } else if (options.service === 'robo-tx') {
+        const service = config.services.roboTx
+        const command = configuredCommand('robo-tx', service)
+        plist = renderLaunchdPlist({
+          label: 'io.harbor.robo-tx',
+          command,
+          args: service.args ?? [],
+          workingDirectory: service.workingDirectory,
+        })
+        filename = 'io.harbor.robo-tx.plist'
+      } else if (options.service === 'robo-api') {
+        const service = config.services.roboApi
+        const command = configuredCommand('robo-api', service)
+        plist = renderLaunchdPlist({
+          label: 'io.harbor.robo-api',
+          command,
+          args: service.args ?? [],
+          workingDirectory: service.workingDirectory,
+        })
+        filename = 'io.harbor.robo-api.plist'
+      } else if (options.service === 'robo-stream') {
+        const service = config.services.roboStream
+        const command = configuredCommand('robo-stream', service)
+        plist = renderLaunchdPlist({
+          label: 'io.harbor.robo-stream',
+          command,
+          args: service.args ?? [],
+          workingDirectory: service.workingDirectory,
+        })
+        filename = 'io.harbor.robo-stream.plist'
       } else {
         throw new Error(`unknown service: ${options.service}`)
       }

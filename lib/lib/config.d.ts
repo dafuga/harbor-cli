@@ -14,7 +14,11 @@ export interface HarborAgentConfig {
         blockProducer: HarborAgentServiceConfig;
         chainApi: HarborAgentServiceConfig;
         traceApi: HarborAgentServiceConfig;
-        roboHistory: HarborAgentServiceConfig;
+        roboCore: HarborAgentServiceConfig;
+        roboActions: HarborAgentServiceConfig;
+        roboTx: HarborAgentServiceConfig;
+        roboApi: HarborAgentServiceConfig;
+        roboStream: HarborAgentServiceConfig;
         storageManifest: HarborAgentServiceConfig;
     };
 }
