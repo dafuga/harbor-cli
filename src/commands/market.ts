@@ -57,28 +57,28 @@ const SERVICE_GUIDANCE: Record<string, ServiceGuidance> = {
     mustNot: 'Do not claim chain API, trace API, or BP duties under this service.',
     oracleChecks: 'Manifest integrity, sampled object hashes, range coverage, freshness.',
   },
-  robocore: {
-    duties: 'Ingest trace data and build Roborovski history slices for a declared block range.',
+  histcore: {
+    duties: 'Ingest trace data and build Harbor History slices for a declared block range.',
     mustNot: 'Do not claim public API routing or query service unless separately registered.',
     oracleChecks: 'Slice manifest integrity, sampled range coverage, freshness.',
   },
-  roboactions: {
+  histactions: {
     duties: 'Serve account/action history queries for a declared block range.',
     mustNot: 'Do not claim txid lookup, API routing, or core slice storage unless separately registered.',
     oracleChecks: 'Sampled account/action responses, block-range boundaries, freshness.',
   },
-  robotx: {
+  histtx: {
     duties: 'Serve transaction-id lookups for a declared block range.',
     mustNot: 'Do not claim account/action indexing or API routing unless separately registered.',
     oracleChecks: 'Sampled txid responses, block-range boundaries, freshness.',
   },
-  roboapi: {
-    duties: 'Serve the Roborovski-compatible API edge and route range queries to backing indexes.',
+  histapi: {
+    duties: 'Serve the Harbor History-compatible API edge and route range queries to backing indexes.',
     mustNot: 'Do not claim storage or indexing work without a separate range registration.',
     oracleChecks: 'Endpoint availability, routing correctness, latency.',
   },
-  robostream: {
-    duties: 'Serve real-time Roborovski history/event streams.',
+  histstream: {
+    duties: 'Serve real-time Harbor History event streams.',
     mustNot: 'Do not claim archive range coverage from stream availability alone.',
     oracleChecks: 'Stream liveness, head freshness, sampled event delivery.',
   },

@@ -9,11 +9,11 @@ interface AgentStatusOptions {
   bpPort: string
   apiPort: string
   tracePort: string
-  roboCorePort?: string
-  roboActionsPort: string
-  roboTxPort: string
-  roboApiPort: string
-  roboStreamPort: string
+  historyCorePort?: string
+  historyActionsPort: string
+  historyTxPort: string
+  historyApiPort: string
+  historyStreamPort: string
   storagePort: string
   config?: string
 }
@@ -34,11 +34,11 @@ interface LaunchdOptions {
     | 'bp'
     | 'chain-api'
     | 'trace-api'
-    | 'robo-core'
-    | 'robo-actions'
-    | 'robo-tx'
-    | 'robo-api'
-    | 'robo-stream'
+    | 'history-core'
+    | 'history-actions'
+    | 'history-tx'
+    | 'history-api'
+    | 'history-stream'
   output?: string
 }
 
@@ -112,11 +112,11 @@ export function createAgentCommand(): Command {
     .option('--bp-port <port>', 'block producer p2p port', '9876')
     .option('--api-port <port>', 'Harbor chain API port', '8888')
     .option('--trace-port <port>', 'Harbor trace API port', '8889')
-    .option('--robo-core-port <port>', 'Roborovski core/indexing status port')
-    .option('--robo-actions-port <port>', 'Roborovski actions API port', '8081')
-    .option('--robo-tx-port <port>', 'Roborovski tx lookup API port', '8082')
-    .option('--robo-api-port <port>', 'Roborovski API router port', '8080')
-    .option('--robo-stream-port <port>', 'Roborovski stream API port', '8083')
+    .option('--history-core-port <port>', 'Harbor History core/indexing status port')
+    .option('--history-actions-port <port>', 'Harbor History actions API port', '8081')
+    .option('--history-tx-port <port>', 'Harbor History tx lookup API port', '8082')
+    .option('--history-api-port <port>', 'Harbor History API router port', '8080')
+    .option('--history-stream-port <port>', 'Harbor History stream API port', '8083')
     .option('--storage-port <port>', 'Harbor storage manifest port', '9090')
     .option('--config <path>', 'config path', defaultConfigPath())
     .action(async (options: AgentStatusOptions) => {
@@ -125,11 +125,11 @@ export function createAgentCommand(): Command {
         {service: 'bp', port: config?.services.blockProducer.port ?? Number(options.bpPort)},
         {service: 'chain-api', port: config?.services.chainApi.port ?? Number(options.apiPort)},
         {service: 'trace-api', port: config?.services.traceApi.port ?? Number(options.tracePort)},
-        {service: 'robo-core', port: config?.services.roboCore.port ?? (options.roboCorePort ? Number(options.roboCorePort) : undefined)},
-        {service: 'robo-actions', port: config?.services.roboActions.port ?? Number(options.roboActionsPort)},
-        {service: 'robo-tx', port: config?.services.roboTx.port ?? Number(options.roboTxPort)},
-        {service: 'robo-api', port: config?.services.roboApi.port ?? Number(options.roboApiPort)},
-        {service: 'robo-stream', port: config?.services.roboStream.port ?? Number(options.roboStreamPort)},
+        {service: 'history-core', port: config?.services.historyCore.port ?? (options.historyCorePort ? Number(options.historyCorePort) : undefined)},
+        {service: 'history-actions', port: config?.services.historyActions.port ?? Number(options.historyActionsPort)},
+        {service: 'history-tx', port: config?.services.historyTx.port ?? Number(options.historyTxPort)},
+        {service: 'history-api', port: config?.services.historyApi.port ?? Number(options.historyApiPort)},
+        {service: 'history-stream', port: config?.services.historyStream.port ?? Number(options.historyStreamPort)},
         {service: 'storage-manifest', port: config?.services.storageManifest.port ?? Number(options.storagePort)},
       ].filter(hasPort)
 
@@ -157,11 +157,11 @@ export function createAgentCommand(): Command {
         {check: 'bp-port', value: String(config.services.blockProducer.port ?? 'unconfigured'), ok: config.services.blockProducer.port ? await canConnect(config.services.blockProducer.port) : false},
         {check: 'chain-api-port', value: String(config.services.chainApi.port), ok: await canConnect(config.services.chainApi.port ?? 8888)},
         {check: 'trace-api-port', value: String(config.services.traceApi.port), ok: await canConnect(config.services.traceApi.port ?? 8889)},
-        {check: 'robo-core-port', value: String(config.services.roboCore.port ?? 'unconfigured'), ok: config.services.roboCore.port ? await canConnect(config.services.roboCore.port) : false},
-        {check: 'robo-actions-port', value: String(config.services.roboActions.port), ok: await canConnect(config.services.roboActions.port ?? 8081)},
-        {check: 'robo-tx-port', value: String(config.services.roboTx.port), ok: await canConnect(config.services.roboTx.port ?? 8082)},
-        {check: 'robo-api-port', value: String(config.services.roboApi.port), ok: await canConnect(config.services.roboApi.port ?? 8080)},
-        {check: 'robo-stream-port', value: String(config.services.roboStream.port), ok: await canConnect(config.services.roboStream.port ?? 8083)},
+        {check: 'history-core-port', value: String(config.services.historyCore.port ?? 'unconfigured'), ok: config.services.historyCore.port ? await canConnect(config.services.historyCore.port) : false},
+        {check: 'history-actions-port', value: String(config.services.historyActions.port), ok: await canConnect(config.services.historyActions.port ?? 8081)},
+        {check: 'history-tx-port', value: String(config.services.historyTx.port), ok: await canConnect(config.services.historyTx.port ?? 8082)},
+        {check: 'history-api-port', value: String(config.services.historyApi.port), ok: await canConnect(config.services.historyApi.port ?? 8080)},
+        {check: 'history-stream-port', value: String(config.services.historyStream.port), ok: await canConnect(config.services.historyStream.port ?? 8083)},
         {check: 'storage-manifest-port', value: String(config.services.storageManifest.port), ok: await canConnect(config.services.storageManifest.port ?? 9090)},
       ]
       console.table(checks)
@@ -170,7 +170,7 @@ export function createAgentCommand(): Command {
   agent
     .command('launchd')
     .description('Write a launchd plist for a Harbor service')
-    .requiredOption('-s, --service <service>', 'bp, chain-api, trace-api, storage, robo-core, robo-actions, robo-tx, robo-api, or robo-stream')
+    .requiredOption('-s, --service <service>', 'bp, chain-api, trace-api, storage, history-core, history-actions, history-tx, history-api, or history-stream')
     .option('--config <path>', 'config path', defaultConfigPath())
     .option('-o, --output <path>', 'output plist path')
     .action(async (options: LaunchdOptions) => {
@@ -215,56 +215,56 @@ export function createAgentCommand(): Command {
           workingDirectory: service.workingDirectory,
         })
         filename = 'io.harbor.trace-api.plist'
-      } else if (options.service === 'robo-core') {
-        const service = config.services.roboCore
-        const command = configuredCommand('robo-core', service)
+      } else if (options.service === 'history-core') {
+        const service = config.services.historyCore
+        const command = configuredCommand('history-core', service)
         plist = renderLaunchdPlist({
-          label: 'io.harbor.robo-core',
+          label: 'io.harbor.history-core',
           command,
           args: service.args ?? [],
           workingDirectory: service.workingDirectory,
         })
-        filename = 'io.harbor.robo-core.plist'
-      } else if (options.service === 'robo-actions') {
-        const service = config.services.roboActions
-        const command = configuredCommand('robo-actions', service)
+        filename = 'io.harbor.history-core.plist'
+      } else if (options.service === 'history-actions') {
+        const service = config.services.historyActions
+        const command = configuredCommand('history-actions', service)
         plist = renderLaunchdPlist({
-          label: 'io.harbor.robo-actions',
+          label: 'io.harbor.history-actions',
           command,
           args: service.args ?? [],
           workingDirectory: service.workingDirectory,
         })
-        filename = 'io.harbor.robo-actions.plist'
-      } else if (options.service === 'robo-tx') {
-        const service = config.services.roboTx
-        const command = configuredCommand('robo-tx', service)
+        filename = 'io.harbor.history-actions.plist'
+      } else if (options.service === 'history-tx') {
+        const service = config.services.historyTx
+        const command = configuredCommand('history-tx', service)
         plist = renderLaunchdPlist({
-          label: 'io.harbor.robo-tx',
+          label: 'io.harbor.history-tx',
           command,
           args: service.args ?? [],
           workingDirectory: service.workingDirectory,
         })
-        filename = 'io.harbor.robo-tx.plist'
-      } else if (options.service === 'robo-api') {
-        const service = config.services.roboApi
-        const command = configuredCommand('robo-api', service)
+        filename = 'io.harbor.history-tx.plist'
+      } else if (options.service === 'history-api') {
+        const service = config.services.historyApi
+        const command = configuredCommand('history-api', service)
         plist = renderLaunchdPlist({
-          label: 'io.harbor.robo-api',
+          label: 'io.harbor.history-api',
           command,
           args: service.args ?? [],
           workingDirectory: service.workingDirectory,
         })
-        filename = 'io.harbor.robo-api.plist'
-      } else if (options.service === 'robo-stream') {
-        const service = config.services.roboStream
-        const command = configuredCommand('robo-stream', service)
+        filename = 'io.harbor.history-api.plist'
+      } else if (options.service === 'history-stream') {
+        const service = config.services.historyStream
+        const command = configuredCommand('history-stream', service)
         plist = renderLaunchdPlist({
-          label: 'io.harbor.robo-stream',
+          label: 'io.harbor.history-stream',
           command,
           args: service.args ?? [],
           workingDirectory: service.workingDirectory,
         })
-        filename = 'io.harbor.robo-stream.plist'
+        filename = 'io.harbor.history-stream.plist'
       } else {
         throw new Error(`unknown service: ${options.service}`)
       }

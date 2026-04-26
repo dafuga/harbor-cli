@@ -14,8 +14,8 @@ harbor agent status
 harbor agent doctor
 harbor agent launchd --service bp
 harbor agent launchd --service trace-api
-harbor agent launchd --service robo-api
-harbor agent launchd --service robo-actions
+harbor agent launchd --service history-api
+harbor agent launchd --service history-actions
 harbor agent launchd --service storage
 harbor storage manifest
 harbor storage serve
@@ -46,13 +46,13 @@ manifest API that oracles can sample:
 - `storage`: store declared Harbor artifacts for assigned ranges. The current
   storage runner exposes a manifest plus sampled file reads so oracles can check
   object hashes, range coverage, and freshness.
-- `robocore`: ingest trace data and build Roborovski history slices for a
+- `histcore`: ingest trace data and build Harbor History slices for a
   declared block range.
-- `roboactions`: serve account/action history for a declared block range.
-- `robotx`: serve transaction-id lookups for a declared block range.
-- `roboapi`: serve the Roborovski-compatible API edge and route queries to
+- `histactions`: serve account/action history for a declared block range.
+- `histtx`: serve transaction-id lookups for a declared block range.
+- `histapi`: serve the Harbor History-compatible API edge and route queries to
   backing range providers.
-- `robostream`: serve real-time Roborovski history/event streams.
+- `histstream`: serve real-time Harbor History event streams.
 - `p2pseed`: maintain reachable p2p seed connectivity and relay blocks and
   transactions. This is not a BP or chain API registration.
 
