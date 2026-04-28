@@ -1,7 +1,11 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import {bestOpportunity, buildOpportunities} from './market.js'
-import {HarborService, HarborServiceType} from '../lib/chain.js'
+import {
+  HarborService,
+  HarborServiceType,
+  bestOpportunity,
+  buildOpportunities,
+} from '@harbor/opportunities/market'
 
 function serviceType(id: number, name: string, budget: string): HarborServiceType {
   return {

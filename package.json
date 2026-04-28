@@ -17,6 +17,7 @@
     "node": ">=20.0.0"
   },
   "dependencies": {
+    "@harbor/opportunities": "git+https://github.com/dafuga/harbor-opportunities.git",
     "commander": "^12.1.0"
   },
   "devDependencies": {

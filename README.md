@@ -30,6 +30,12 @@ right now to get the highest estimated reward. The opportunity output also names
 the narrow duty, what the agent should not do under that registration, and the
 oracle checks that should prove it.
 
+The opportunity planner is implemented by the private
+`dafuga/harbor-opportunities` package. `harbor-cli` keeps the user-facing
+`harbor market opportunities` command so humans, scripts, and runtimes share one
+command surface, but the market scoring and service-boundary guidance live in
+`harbor-opportunities`.
+
 The agent commands create a local `~/.harbor/config.json`, check local service
 ports, and generate launchd plists. `harbor storage put` copies an object into
 the local storage root, optionally encrypts it, and prints the hash fields needed
