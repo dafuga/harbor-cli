@@ -1,0 +1,107 @@
+import {Command} from 'commander'
+import {addJsonActionCommand, Field} from './action-fields.js'
+
+interface MarketActionSpec {
+  command: string
+  action: string
+  fields: Field[]
+  signerField?: string
+}
+
+const MARKET_CONTRACT = process.env.HARBOR_MARKET_CONTRACT ?? 'svcmarket'
+
+const marketActions: MarketActionSpec[] = [
+  {
+    command: 'configure',
+    action: 'setparams',
+    fields: [
+      'token_symbol',
+      'provider_pass_reward',
+      'provider_fail_penalty',
+      'oracle_agree_reward',
+      'oracle_disagree_penalty',
+      'oracle_miss_penalty',
+      ['min_oracle_reports', 'number'],
+      ['min_check_window_sec', 'number'],
+      ['max_endpoint_size', 'number'],
+      ['max_metadata_size', 'number'],
+    ],
+  },
+  {
+    command: 'set-service-type',
+    action: 'setsvctype',
+    fields: [
+      ['service_type', 'number'],
+      'service_name',
+      ['enabled', 'boolean'],
+      ['reward_weight', 'number'],
+      'epoch_budget',
+      'base_provider_reward',
+      'provider_fail_penalty',
+      'oracle_agree_reward',
+      'oracle_disagree_penalty',
+      'oracle_miss_penalty',
+      'min_provider_stake',
+      'min_oracle_stake',
+      ['min_oracle_reports', 'number'],
+      ['min_check_window_sec', 'number'],
+      'metadata',
+    ],
+  },
+  {command: 'register-provider', action: 'regprovider', fields: ['provider', 'metadata'], signerField: 'provider'},
+  {command: 'unregister-provider', action: 'unregprov', fields: ['provider'], signerField: 'provider'},
+  {command: 'register-oracle', action: 'regoracle', fields: ['oracle', ['supported_service_mask', 'number'], 'metadata'], signerField: 'oracle'},
+  {command: 'unregister-oracle', action: 'unregoracle', fields: ['oracle'], signerField: 'oracle'},
+  {command: 'stake-provider', action: 'stakeprov', fields: ['provider', 'quantity'], signerField: 'provider'},
+  {command: 'stake-oracle', action: 'stakeoracle', fields: ['oracle', 'quantity'], signerField: 'oracle'},
+  {command: 'unstake-provider', action: 'unstakeprov', fields: ['provider', 'quantity'], signerField: 'provider'},
+  {command: 'unstake-oracle', action: 'unstakeorcl', fields: ['oracle', 'quantity'], signerField: 'oracle'},
+  {command: 'fund-reward', action: 'fundreward', fields: ['from', 'quantity'], signerField: 'from'},
+  {
+    command: 'add-service',
+    action: 'addservice',
+    fields: [
+      'provider',
+      ['service_type', 'number'],
+      ['segment_kind', 'number'],
+      'range_start',
+      'range_end',
+      ['capacity_bytes', 'number'],
+      'endpoint',
+      'metadata',
+    ],
+    signerField: 'provider',
+  },
+  {command: 'disable-service', action: 'disablesvc', fields: ['provider', ['service_id', 'number']], signerField: 'provider'},
+  {command: 'heartbeat', action: 'heartbeat', fields: ['provider', ['service_id', 'number'], 'status_hash', 'metadata'], signerField: 'provider'},
+  {
+    command: 'create-check',
+    action: 'createcheck',
+    fields: [
+      ['service_id', 'number'],
+      ['oracles', 'json'],
+      'sample_start',
+      'sample_end',
+      'payload_hash',
+      ['commit_window_sec', 'number'],
+      ['reveal_window_sec', 'number'],
+    ],
+  },
+  {command: 'commit-check', action: 'commit', fields: ['oracle', ['check_id', 'number'], 'commitment'], signerField: 'oracle'},
+  {command: 'reveal-check', action: 'reveal', fields: ['oracle', ['check_id', 'number'], ['passed', 'boolean'], 'result_hash', 'salt'], signerField: 'oracle'},
+  {command: 'settle-check', action: 'settle', fields: [['check_id', 'number']]},
+  {command: 'claim', action: 'claim', fields: ['owner', 'quantity'], signerField: 'owner'},
+  {command: 'set-referral-config', action: 'setrefcfg', fields: [['enabled', 'boolean'], ['first_level_bps', 'number'], ['decay_bps', 'number'], ['max_total_bps', 'number']]},
+  {command: 'set-referrer', action: 'setreferrer', fields: ['account', 'referrer'], signerField: 'account'},
+  {command: 'set-inflation', action: 'setinfl', fields: ['daily_inflation', 'token_issuer', ['min_epoch_sec', 'number']]},
+  {command: 'set-project-inflation', action: 'setprojinf', fields: ['project_contract', ['project_bps', 'number']]},
+  {command: 'vote-project', action: 'voteproj', fields: ['voter', ['project_id', 'number'], 'quantity'], signerField: 'voter'},
+  {command: 'unvote-project', action: 'unvoteproj', fields: ['voter'], signerField: 'voter'},
+  {command: 'close-inflation', action: 'closeinfl', fields: []},
+]
+
+export function addMarketActionCommands(market: Command): void {
+  for (const spec of marketActions) {
+    addJsonActionCommand(market, MARKET_CONTRACT, spec)
+  }
+}

@@ -1,9 +1,7 @@
-import fs from 'node:fs/promises'
-import {ABI, APIClient, Action, Checksum256, FetchProvider, PrivateKey, Serializer, Transaction} from '@wharfkit/antelope'
-import {AbstractWalletPlugin, LoginContext, Session, TransactContext, WalletPluginMetadata} from '@wharfkit/session'
-import {WalletPluginPrivateKey} from '@wharfkit/wallet-plugin-privatekey'
+import {ABI, APIClient, Action, FetchProvider} from '@wharfkit/antelope'
+import {Session} from '@wharfkit/session'
+import {walletPluginFor} from './private-key-wallet.js'
 import {HarborTerminalUI} from './terminal-ui.js'
-import {resolvePrivateKey} from './wallet.js'
 
 export interface AuthOptions {
   url?: string
@@ -22,44 +20,6 @@ export interface PushActionInput extends AuthOptions {
 }
 
 const abiCache = new Map<string, ABI>()
-
-class MultiPrivateKeyWalletPlugin extends AbstractWalletPlugin {
-  id = 'harbor-multi-privatekey'
-  config = {
-    requiresChainSelect: false,
-    requiresPermissionSelect: false,
-    requiresPermissionEntry: false,
-  }
-  metadata = WalletPluginMetadata.from({
-    name: 'Harbor Private Key Signer',
-    description: 'Signs non-interactive Harbor transactions with one or more private keys.',
-  })
-
-  constructor(private readonly privateKeys: PrivateKey[]) {
-    super()
-    if (privateKeys.length === 1) {
-      this.metadata.publicKey = String(privateKeys[0].toPublic())
-    }
-  }
-
-  async login(context: LoginContext) {
-    if (!context.permissionLevel) {
-      throw new Error('missing permission level for private key login')
-    }
-    return {
-      chain: context.chain ? context.chain.id : context.chains[0].id,
-      permissionLevel: context.permissionLevel,
-    }
-  }
-
-  async sign(resolved: {transaction: unknown}, context: TransactContext) {
-    const transaction = Transaction.from(resolved.transaction as any)
-    const digest = transaction.signingDigest(Checksum256.from(context.chain.id))
-    return {
-      signatures: this.privateKeys.map((privateKey) => privateKey.signDigest(digest)),
-    }
-  }
-}
 
 export function apiUrl(url?: string): string {
   return url ?? process.env.HARBOR_API_URL ?? 'http://127.0.0.1:8888'
@@ -158,28 +118,12 @@ export async function serializeAction(input: PushActionInput): Promise<Action> {
   )
 }
 
-async function resolvePrivateKeys(keyOption: string | undefined, actor: string): Promise<PrivateKey[]> {
-  const rawKeys = keyOption ?? process.env.HARBOR_PRIVATE_KEY
-  if (!rawKeys || !rawKeys.includes(',')) {
-    return [PrivateKey.from(await resolvePrivateKey(keyOption, actor))]
-  }
-  return Promise.all(
-    rawKeys.split(',').filter(Boolean).map(async (key) => PrivateKey.from(await resolvePrivateKey(key.trim(), actor)))
-  )
-}
-
 export async function transactActions(options: AuthOptions, actions: Action[] | Array<Record<string, unknown>>) {
   const url = apiUrl(options.url)
   const client = clientFor(url)
   const info = await client.v1.chain.get_info()
   const auth = permissionLevel(options)
-  const privateKeys = await resolvePrivateKeys(options.key, auth.actor)
-  const walletPlugin = privateKeys.length === 1
-    ? new WalletPluginPrivateKey(privateKeys[0])
-    : new MultiPrivateKeyWalletPlugin(privateKeys)
-  walletPlugin.config.requiresChainSelect = false
-  walletPlugin.config.requiresPermissionSelect = false
-  walletPlugin.config.requiresPermissionEntry = false
+  const walletPlugin = await walletPluginFor(options.key, auth.actor)
   const session = new Session({
     chain: {id: info.chain_id, url},
     actor: auth.actor,
@@ -225,43 +169,4 @@ export async function getTableRows<T = unknown>(
     request.upper_bound = options.upperBound
   }
   return client.v1.chain.get_table_rows(request as any) as Promise<{rows: T[]; more: boolean | string; next_key?: string}>
-}
-
-export async function deployContract(options: AuthOptions & {account: string; wasm: string; abi: string; validate?: boolean}) {
-  const client = clientFor(options.url)
-  const wasm = await fs.readFile(options.wasm)
-  const abiJson = JSON.parse(await fs.readFile(options.abi, 'utf8'))
-  if (options.validate) {
-    try {
-      const existing = await client.v1.chain.get_abi(options.account)
-      if (existing.abi) {
-        const oldTables = new Set(existing.abi.tables.map((table) => String(table.name)))
-        const newTables = new Set(ABI.from(abiJson).tables.map((table) => String(table.name)))
-        const removed = [...oldTables].filter((table) => !newTables.has(table))
-        if (removed.length) {
-          throw new Error(`deployment removes ABI tables: ${removed.join(', ')}`)
-        }
-      }
-    } catch (error) {
-      if ((error as Error).message.includes('deployment removes')) {
-        throw error
-      }
-    }
-  }
-
-  const actions = [
-    {
-      account: 'eosio',
-      name: 'setcode',
-      authorization: [permissionLevel(options, options.account)],
-      data: {account: options.account, vmtype: 0, vmversion: 0, code: wasm.toString('hex')},
-    },
-    {
-      account: 'eosio',
-      name: 'setabi',
-      authorization: [permissionLevel(options, options.account)],
-      data: {account: options.account, abi: Serializer.encode({object: ABI.from(abiJson), type: ABI}).hexString},
-    },
-  ]
-  return transactActions({...options, actor: options.actor ?? options.account}, actions)
 }

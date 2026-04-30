@@ -6,6 +6,7 @@ import {
   bestOpportunity,
   buildOpportunities,
 } from '@harbor/opportunities/market'
+import {buildMarketActionData} from './market.js'
 
 function serviceType(id: number, name: string, budget: string): HarborServiceType {
   return {
@@ -39,6 +40,12 @@ function service(id: number, serviceTypeId: number): HarborService {
     endpoint: 'http://127.0.0.1',
     metadata: '{}',
   }
+}
+
+function opportunityText(opportunities: ReturnType<typeof buildOpportunities>, name: string, key: 'duties' | 'mustNot' | 'oracleChecks'): string {
+  const opportunity = opportunities.find((item) => item.name === name)
+  assert.ok(opportunity, `${name} opportunity should exist`)
+  return String(opportunity[key] ?? '')
 }
 
 test('bestOpportunity prefers the best reward, then deeper budget', () => {
@@ -82,27 +89,48 @@ test('opportunities describe narrow service duties', () => {
     []
   )
 
-  const bp = opportunities.find((opportunity) => opportunity.name === 'bp')
-  const traceApi = opportunities.find((opportunity) => opportunity.name === 'traceapi')
-  const storage = opportunities.find((opportunity) => opportunity.name === 'storage')
-  const historyCore = opportunities.find((opportunity) => opportunity.name === 'histcore')
-  const historyActions = opportunities.find((opportunity) => opportunity.name === 'histactions')
-  const historyTx = opportunities.find((opportunity) => opportunity.name === 'histtx')
-  const historyApi = opportunities.find((opportunity) => opportunity.name === 'histapi')
-  const p2pSeed = opportunities.find((opportunity) => opportunity.name === 'p2pseed')
-  const verifier = opportunities.find((opportunity) => opportunity.name === 'verifier')
+  const checks = [
+    ['bp', 'duties', /Produce and validate blocks only/],
+    ['bp', 'mustNot', /Do not serve chain API/],
+    ['traceapi', 'duties', /traces only/],
+    ['traceapi', 'mustNot', /Do not serve chain API/],
+    ['storage', 'duties', /Store declared Harbor artifacts/],
+    ['storage', 'oracleChecks', /sampled object hashes/],
+    ['histcore', 'duties', /declared block range/],
+    ['histactions', 'duties', /account\/action history/],
+    ['histtx', 'duties', /transaction-id lookups/],
+    ['histapi', 'mustNot', /separate range registration/],
+    ['p2pseed', 'duties', /relay blocks\/transactions/],
+    ['verifier', 'duties', /registered Harbor agents/],
+    ['verifier', 'oracleChecks', /storage replica audits/],
+  ] as const
 
-  assert.match(bp?.duties ?? '', /Produce and validate blocks only/)
-  assert.match(bp?.mustNot ?? '', /Do not serve chain API/)
-  assert.match(traceApi?.duties ?? '', /traces only/)
-  assert.match(traceApi?.mustNot ?? '', /Do not serve chain API/)
-  assert.match(storage?.duties ?? '', /Store declared Harbor artifacts/)
-  assert.match(storage?.oracleChecks ?? '', /sampled object hashes/)
-  assert.match(historyCore?.duties ?? '', /declared block range/)
-  assert.match(historyActions?.duties ?? '', /account\/action history/)
-  assert.match(historyTx?.duties ?? '', /transaction-id lookups/)
-  assert.match(historyApi?.mustNot ?? '', /separate range registration/)
-  assert.match(p2pSeed?.duties ?? '', /relay blocks\/transactions/)
-  assert.match(verifier?.duties ?? '', /registered Harbor agents/)
-  assert.match(verifier?.oracleChecks ?? '', /storage replica audits/)
+  for (const [name, key, pattern] of checks) {
+    assert.match(opportunityText(opportunities, name, key), pattern)
+  }
+})
+
+test('referral market actions serialize expected payloads', () => {
+  assert.deepEqual(
+    buildMarketActionData(
+      [
+        ['enabled', 'boolean'],
+        ['first_level_bps', 'number'],
+        ['decay_bps', 'number'],
+        ['max_total_bps', 'number'],
+      ],
+      ['true', '500', '5000', '1000']
+    ),
+    {
+      enabled: true,
+      first_level_bps: 500,
+      decay_bps: 5000,
+      max_total_bps: 1000,
+    }
+  )
+
+  assert.deepEqual(buildMarketActionData(['account', 'referrer'], ['agent1111111', 'mentor11111']), {
+    account: 'agent1111111',
+    referrer: 'mentor11111',
+  })
 })

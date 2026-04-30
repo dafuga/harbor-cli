@@ -1,26 +1,74 @@
 import {Command} from 'commander'
 import {PrivateKey} from '@wharfkit/antelope'
 import {addTxOptions, pushJsonAction} from './action.js'
-import {clientFor, permissionLevel, printResult, transactActions} from '../lib/tx.js'
+import {AuthOptions, clientFor, permissionLevel, printResult, transactActions} from '../lib/tx.js'
 
 function authForKey(key: string) {
   return {threshold: 1, keys: [{key, weight: 1}], accounts: [], waits: []}
 }
 
-function parseCodeAccounts(value?: string): Array<{permission: {actor: string; permission: string}; weight: number}> {
+export function parseCodeAccounts(value?: string): Array<{permission: {actor: string; permission: string}; weight: number}> {
   if (!value) {
     return []
   }
-  return value.split(',').filter(Boolean).map((actor) => ({
-    permission: {actor, permission: 'eosio.code'},
-    weight: 1,
-  }))
+  const seen = new Set<string>()
+  return value
+    .split(',')
+    .map((actor) => actor.trim())
+    .filter((actor) => {
+      if (!actor || seen.has(actor)) {
+        return false
+      }
+      seen.add(actor)
+      return true
+    })
+    .sort((left, right) => {
+      if (left === right) {
+        return 0
+      }
+      return left < right ? -1 : 1
+    })
+    .map((actor) => ({
+      permission: {actor, permission: 'eosio.code'},
+      weight: 1,
+    }))
 }
 
-export function createChainCommand(): Command {
-  const chain = new Command('chain')
-  chain.description('Antelope-style chain administration helpers')
+function createAccountActions(account: string, options: Record<string, string | boolean | undefined>) {
+  const creator = String(options.creator)
+  const authOptions: AuthOptions = {
+    actor: typeof options.actor === 'string' ? options.actor : creator,
+    permission: typeof options.permission === 'string' ? options.permission : undefined,
+  }
+  const auth = [permissionLevel(authOptions)]
+  const actions: Array<Record<string, unknown>> = [{
+    account: 'eosio',
+    name: 'newaccount',
+    authorization: auth,
+    data: {
+      creator,
+      name: account,
+      owner: authForKey(String(options.ownerKey)),
+      active: authForKey(String(options.activeKey)),
+    },
+  }]
+  if (options.buyRam) {
+    actions.push({account: 'eosio', name: 'buyram', authorization: auth, data: {payer: creator, receiver: account, quant: options.buyRam}})
+  } else if (Number(options.ramBytes) > 0) {
+    actions.push({account: 'eosio', name: 'buyrambytes', authorization: auth, data: {payer: creator, receiver: account, bytes: Number(options.ramBytes)}})
+  }
+  if (options.stakeNet && options.stakeCpu) {
+    actions.push({
+      account: 'eosio',
+      name: 'delegatebw',
+      authorization: auth,
+      data: {from: creator, receiver: account, stake_net_quantity: options.stakeNet, stake_cpu_quantity: options.stakeCpu, transfer: false},
+    })
+  }
+  return {creator, actions}
+}
 
+function addInfoCommand(chain: Command): void {
   chain
     .command('info')
     .option('-u, --url <url>', 'Harbor chain API URL', process.env.HARBOR_API_URL ?? 'http://127.0.0.1:8888')
@@ -29,7 +77,9 @@ export function createChainCommand(): Command {
       const info = await clientFor(options.url).v1.chain.get_info()
       printResult(info, options.json ?? true)
     })
+}
 
+function addKeygenCommand(chain: Command): void {
   chain
     .command('keygen')
     .description('Generate a private/public key pair')
@@ -39,7 +89,9 @@ export function createChainCommand(): Command {
       const result = {privateKey: privateKey.toString(), publicKey: privateKey.toPublic().toString()}
       printResult(result, options.json ?? true)
     })
+}
 
+function addCreateAccountCommand(chain: Command): void {
   addTxOptions(
     chain
       .command('create-account <account>')
@@ -52,59 +104,12 @@ export function createChainCommand(): Command {
       .option('--stake-net <quantity>', 'NET stake quantity')
       .option('--stake-cpu <quantity>', 'CPU stake quantity')
   ).action(async (account: string, options) => {
-    const creator = options.creator
-    const auth = [permissionLevel({...options, actor: options.actor ?? creator})]
-    const actions: Array<Record<string, unknown>> = [{
-      account: 'eosio',
-      name: 'newaccount',
-      authorization: auth,
-      data: {
-        creator,
-        name: account,
-        owner: authForKey(options.ownerKey),
-        active: authForKey(options.activeKey),
-      },
-    }]
-    if (options.buyRam) {
-      actions.push({
-        account: 'eosio',
-        name: 'buyram',
-        authorization: auth,
-        data: {
-          payer: creator,
-          receiver: account,
-          quant: options.buyRam,
-        },
-      })
-    } else if (Number(options.ramBytes) > 0) {
-      actions.push({
-        account: 'eosio',
-        name: 'buyrambytes',
-        authorization: auth,
-        data: {
-          payer: creator,
-          receiver: account,
-          bytes: Number(options.ramBytes),
-        },
-      })
-    }
-    if (options.stakeNet && options.stakeCpu) {
-      actions.push({
-        account: 'eosio',
-        name: 'delegatebw',
-        authorization: auth,
-        data: {
-          from: creator,
-          receiver: account,
-          stake_net_quantity: options.stakeNet,
-          stake_cpu_quantity: options.stakeCpu,
-          transfer: false,
-        },
-      })
-    }
+    const {creator, actions} = createAccountActions(account, options)
     printResult(await transactActions({...options, actor: options.actor ?? creator}, actions), options.json)
   })
+}
 
+function addTransferCommand(chain: Command): void {
   addTxOptions(
     chain
       .command('transfer')
@@ -121,7 +126,9 @@ export function createChainCommand(): Command {
       memo: options.memo,
     }, {...options, actor: options.actor ?? options.from})
   })
+}
 
+function addUpdateAuthCommand(chain: Command): void {
   addTxOptions(
     chain
       .command('updateauth')
@@ -143,7 +150,9 @@ export function createChainCommand(): Command {
       },
     }, {...options, actor: options.actor ?? options.account})
   })
+}
 
+function addLinkAuthCommand(chain: Command): void {
   addTxOptions(
     chain
       .command('linkauth')
@@ -159,6 +168,17 @@ export function createChainCommand(): Command {
       requirement: options.requirement,
     }, {...options, actor: options.actor ?? options.accountName})
   })
+}
+
+export function createChainCommand(): Command {
+  const chain = new Command('chain')
+  chain.description('Antelope-style chain administration helpers')
+  addInfoCommand(chain)
+  addKeygenCommand(chain)
+  addCreateAccountCommand(chain)
+  addTransferCommand(chain)
+  addUpdateAuthCommand(chain)
+  addLinkAuthCommand(chain)
 
   return chain
 }

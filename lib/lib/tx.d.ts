@@ -65,20 +65,3 @@ export declare function getTableRows<T = unknown>(contract: string, table: strin
     more: boolean | string;
     next_key?: string;
 }>;
-export declare function deployContract(options: AuthOptions & {
-    account: string;
-    wasm: string;
-    abi: string;
-    validate?: boolean;
-}): Promise<{
-    transaction_id: string | undefined;
-    status: string | undefined;
-    response: {
-        transaction_id?: string;
-        processed?: {
-            receipt?: {
-                status?: string;
-            };
-        };
-    } | undefined;
-}>;
