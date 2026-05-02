@@ -21,6 +21,14 @@ harbor storage put ./artifact.bin
 harbor storage put ./artifact.bin --encrypt --private-key "$HARBOR_STORAGE_KEY"
 harbor storage manifest
 harbor storage serve
+harbor bank assets --json
+harbor bank balances myaccount --json
+harbor bank open myaccount "50.0000 SYS" "5.0000 SYS"
+harbor bank setup-msig myaccount --approvers myaccount@active --key-auth "$PUBKEY"
+harbor bank propose-withdraw myaccount recipient "6.0000 SYS" "invoice" --approvers myaccount@active
+harbor bank approve myaccount proposal1 myaccount@active
+harbor bank exec myaccount proposal1 myaccount --permission bankhigh
+harbor bank withdraw myaccount recipient "6.0000 SYS" "invoice"
 ```
 
 The first implementation reads the `svcmarket` contract tables and reports the
@@ -45,6 +53,11 @@ manifest API that oracles and verifiers can sample:
 - `GET /health`
 - `GET /manifest`
 - `GET /files/<path>`
+
+The bank commands target the `harborbank` vault contract. High-value
+withdrawals are a two-step flow: the multisig proposal executes the
+`approvewd` gate under the configured high-value permission, then the owner
+submits the active-key `withdraw` that consumes that approval.
 
 ## Service Boundaries
 
