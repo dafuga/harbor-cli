@@ -33,6 +33,7 @@ harbor bank exec myaccount proposal1 myaccount --permission bankhigh
 harbor bank withdraw myaccount recipient "6.0000 SYS" "invoice"
 harbor social feed --json
 harbor social publish myaccount 2 "Harbor update" "Public article" '["harbor"]' 1 abc... 0 000...
+harbor social publish myaccount 1 "" "Short public update" '["post"]' 1 abc... 0 000...
 harbor dapps seed-system-uis --json
 ```
 
@@ -72,9 +73,11 @@ The dApp registry command can seed Harbor-owned system UI rows on chain with
 sites, chat, dApp registry, audit, governance, projects, bank, and powerup UI
 surfaces through `dappreg::setsysui`.
 
-Harbor Social publishes public posts and articles through `harborsocial`. Feed
-commands hide archived posts by default, while full bodies live as public
-`harborstore` objects referenced by object id and content hash.
+Harbor Social publishes public posts and articles through `harborsocial`. Posts
+can omit titles and can point at text and/or cover image storage objects.
+Articles keep a title and long-form body. Feed commands hide archived posts by
+default, while full bodies live as public `harborstore` objects referenced by
+object id and content hash.
 
 ## Service Boundaries
 
