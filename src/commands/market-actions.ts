@@ -58,6 +58,21 @@ const marketActions: MarketActionSpec[] = [
   {command: 'unstake-oracle', action: 'unstakeorcl', fields: ['oracle', 'quantity'], signerField: 'oracle'},
   {command: 'fund-reward', action: 'fundreward', fields: ['from', 'quantity'], signerField: 'from'},
   {
+    command: 'set-price-pair',
+    action: 'setpricepair',
+    fields: [
+      ['pair_id', 'number'],
+      'base_symbol',
+      'quote_symbol',
+      ['enabled', 'boolean'],
+      ['min_reporters', 'number'],
+      ['max_age_sec', 'number'],
+      ['max_deviation_bps', 'number'],
+      'oracle_reward',
+    ],
+  },
+  {command: 'submit-price', action: 'submitprice', fields: ['oracle', ['pair_id', 'number'], ['price', 'number'], 'source_hash'], signerField: 'oracle'},
+  {
     command: 'add-service',
     action: 'addservice',
     fields: [

@@ -18,6 +18,7 @@ import {
 import {createMarketCommand} from './commands/market.js'
 import {createSignCommand} from './commands/sign.js'
 import {createSocialCommand} from './commands/social.js'
+import {createStableCommand} from './commands/stable.js'
 import {createStorageCommand} from './commands/storage.js'
 import {createTableCommand} from './commands/table.js'
 import {createWalletCommand} from './commands/wallet.js'
@@ -40,6 +41,7 @@ program.addCommand(createAgentCommand())
 program.addCommand(createStorageCommand())
 program.addCommand(createSocialCommand())
 program.addCommand(createBankCommand())
+program.addCommand(createStableCommand())
 program.addCommand(createSitesCommand())
 program.addCommand(createChatCommand())
 program.addCommand(createDappsCommand())
