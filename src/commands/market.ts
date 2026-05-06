@@ -1,13 +1,18 @@
 import {Command} from 'commander'
 import {
   HarborService,
+  HarborServiceType,
   MarketOptions as OpportunityMarketOptions,
-  buildOpportunityReport,
+  MarketSnapshot,
+  Opportunity,
+  bestOpportunity,
+  buildOpportunities,
   getTableRows,
   isActive,
   loadMarket,
   recommendation,
 } from '@harbor/opportunities/market'
+import {addTxOptions, pushJsonAction} from './action.js'
 import {buildActionData} from './action-fields.js'
 import type {Field} from './action-fields.js'
 import {addMarketActionCommands} from './market-actions.js'
@@ -17,9 +22,34 @@ export interface MarketOptions extends OpportunityMarketOptions {
   contract: string
   json?: boolean
   best?: boolean
+  agent?: string
 }
 
 export type {Field} from './action-fields.js'
+
+export interface UnableOpportunity {
+  service_type: number
+  service_name: string
+  reason: string
+  metadata: string
+  updated_at: string
+}
+
+export type OpportunityWithUnable = Opportunity & {
+  unableReason?: string
+  unableMetadata?: string
+  unableUpdatedAt?: string
+}
+
+export type PrintableOpportunityWithUnable = Omit<OpportunityWithUnable, 'estimatedProviderRewardAmount'>
+
+export interface AgentOpportunityReport {
+  rewardPool?: string
+  agent?: string
+  unable: UnableOpportunity[]
+  best: PrintableOpportunityWithUnable | null
+  opportunities: PrintableOpportunityWithUnable[]
+}
 
 export interface ReferralConfig {
   id: number
@@ -51,6 +81,76 @@ export function buildMarketActionData(fields: Field[], values: string[]): Record
   return buildActionData(fields, values)
 }
 
+function printableOpportunityWithUnable(opportunity: OpportunityWithUnable): PrintableOpportunityWithUnable {
+  const {estimatedProviderRewardAmount: _estimatedProviderRewardAmount, ...printable} = opportunity
+  return printable
+}
+
+export function buildAgentOpportunityReportFromSnapshot(
+  snapshot: MarketSnapshot,
+  unableRows: UnableOpportunity[] = [],
+  agent?: string
+): AgentOpportunityReport {
+  const unableByServiceType = new Map(unableRows.map((row) => [Number(row.service_type), row]))
+  const opportunities: OpportunityWithUnable[] = buildOpportunities(snapshot.types, snapshot.services).map((opportunity) => {
+    const unable = unableByServiceType.get(opportunity.id)
+    if (!unable) {
+      return opportunity
+    }
+
+    return {
+      ...opportunity,
+      status: 'unable',
+      unableReason: unable.reason,
+      unableMetadata: unable.metadata,
+      unableUpdatedAt: unable.updated_at,
+    }
+  })
+  const best = bestOpportunity(opportunities)
+
+  return {
+    rewardPool: snapshot.state?.reward_pool,
+    agent,
+    unable: unableRows,
+    best: best ? printableOpportunityWithUnable(best as OpportunityWithUnable) : null,
+    opportunities: opportunities.map(printableOpportunityWithUnable),
+  }
+}
+
+async function loadUnableOpportunities(options: MarketOptions): Promise<UnableOpportunity[]> {
+  if (!options.agent) {
+    return []
+  }
+
+  const unable = await getTableRows<UnableOpportunity>(options.url, options.contract, 'unables', {scope: options.agent})
+  return unable.rows
+}
+
+async function buildAgentOpportunityReport(options: MarketOptions): Promise<AgentOpportunityReport> {
+  const [snapshot, unableRows] = await Promise.all([
+    loadMarket(options),
+    loadUnableOpportunities(options),
+  ])
+  return buildAgentOpportunityReportFromSnapshot(snapshot, unableRows, options.agent)
+}
+
+function serviceTypeMatches(serviceType: HarborServiceType, service: string): boolean {
+  const id = Number(service)
+  if (Number.isInteger(id) && Number(serviceType.id) === id) {
+    return true
+  }
+  return serviceType.service_name === service
+}
+
+async function resolveServiceType(options: Pick<MarketOptions, 'url' | 'contract'>, service: string): Promise<HarborServiceType> {
+  const serviceTypes = await getTableRows<HarborServiceType>(options.url, options.contract, 'svctypes')
+  const serviceType = serviceTypes.rows.find((row) => serviceTypeMatches(row, service))
+  if (!serviceType) {
+    throw new Error(`unknown service opportunity: ${service}`)
+  }
+  return serviceType
+}
+
 async function loadReferralReport(options: MarketOptions): Promise<ReferralReport> {
   const [config, referrals, stats] = await Promise.all([
     getTableRows<ReferralConfig>(options.url, options.contract, 'refcfg'),
@@ -66,15 +166,16 @@ async function loadReferralReport(options: MarketOptions): Promise<ReferralRepor
 }
 
 function addOpportunitiesCommand(market: Command): void {
-  market
-    .command('opportunities')
+  const opportunities = new Command('opportunities')
+  opportunities
     .description('Show token opportunities for agents')
     .option('-u, --url <url>', 'Harbor chain API URL', process.env.HARBOR_API_URL ?? 'http://127.0.0.1:8888')
     .option('-c, --contract <account>', 'service market contract account', process.env.HARBOR_MARKET_CONTRACT ?? 'svcmarket')
+    .option('-a, --agent <account>', 'agent account used to filter unable opportunities')
     .option('--json', 'print JSON')
     .option('--best', 'show the best current opportunity for one agent')
     .action(async (options: MarketOptions) => {
-      const report = buildOpportunityReport(await loadMarket(options))
+      const report = await buildAgentOpportunityReport(options)
 
       if (options.json) {
         console.log(JSON.stringify(report, null, 2))
@@ -95,6 +196,47 @@ function addOpportunitiesCommand(market: Command): void {
 
       console.table(report.opportunities)
     })
+
+  addTxOptions(
+    opportunities
+      .command('unable <agent> <service> <reason>')
+      .description('Tell Harbor this agent cannot do an opportunity')
+      .option('-c, --contract <account>', 'service market contract account', process.env.HARBOR_MARKET_CONTRACT ?? 'svcmarket')
+      .option('-m, --metadata <json>', 'operator metadata', '{}')
+  ).action(async (agent: string, service: string, reason: string, options: MarketOptions & {actor?: string; metadata?: string}) => {
+    const serviceType = await resolveServiceType(options, service)
+    await pushJsonAction(
+      String(options.contract),
+      'unable',
+      {
+        agent,
+        service_type: Number(serviceType.id),
+        reason,
+        metadata: options.metadata ?? '{}',
+      },
+      {...options, actor: options.actor ?? agent}
+    )
+  })
+
+  addTxOptions(
+    opportunities
+      .command('able <agent> <service>')
+      .description('Clear an unable opportunity marker for an agent')
+      .option('-c, --contract <account>', 'service market contract account', process.env.HARBOR_MARKET_CONTRACT ?? 'svcmarket')
+  ).action(async (agent: string, service: string, options: MarketOptions & {actor?: string}) => {
+    const serviceType = await resolveServiceType(options, service)
+    await pushJsonAction(
+      String(options.contract),
+      'able',
+      {
+        agent,
+        service_type: Number(serviceType.id),
+      },
+      {...options, actor: options.actor ?? agent}
+    )
+  })
+
+  market.addCommand(opportunities)
 }
 
 function addServicesCommand(market: Command): void {

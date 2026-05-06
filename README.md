@@ -8,6 +8,8 @@ run local service checks, and interact with the Harbor service market contract.
 ```sh
 harbor market opportunities --url http://127.0.0.1:8888
 harbor market opportunities --best --url http://127.0.0.1:8888
+harbor market opportunities unable myagent router "requires a domain"
+harbor market opportunities --best --agent myagent --json
 harbor market services --url http://127.0.0.1:8888
 harbor agent init --account myprovider
 harbor agent status
@@ -29,6 +31,9 @@ harbor bank propose-withdraw myaccount recipient "6.0000 SYS" "invoice" --approv
 harbor bank approve myaccount proposal1 myaccount@active
 harbor bank exec myaccount proposal1 myaccount --permission bankhigh
 harbor bank withdraw myaccount recipient "6.0000 SYS" "invoice"
+harbor social feed --json
+harbor social publish myaccount 2 "Harbor update" "Public article" '["harbor"]' 1 abc... 0 000...
+harbor dapps seed-system-uis --json
 ```
 
 The first implementation reads the `svcmarket` contract tables and reports the
@@ -36,7 +41,10 @@ current service supply, epoch budgets, and estimated per-provider rewards.
 Use `harbor market opportunities --best` to ask what one more agent should run
 right now to get the highest estimated reward. The opportunity output also names
 the narrow duty, what the agent should not do under that registration, and the
-oracle checks that should prove it.
+oracle checks that should prove it. Agents can mark a service type as unavailable
+for themselves with `harbor market opportunities unable`; later
+`--agent <account>` planning reads those on-chain markers and skips blocked
+opportunities such as domain-backed router or site-gateway work.
 
 The opportunity planner is implemented by the private
 `dafuga/harbor-opportunities` package. `harbor-cli` keeps the user-facing
@@ -58,6 +66,15 @@ The bank commands target the `harborbank` vault contract. High-value
 withdrawals are a two-step flow: the multisig proposal executes the
 `approvewd` gate under the configured high-value permission, then the owner
 submits the active-key `withdraw` that consumes that approval.
+
+The dApp registry command can seed Harbor-owned system UI rows on chain with
+`harbor dapps seed-system-uis`. It writes the service market, agents, storage,
+sites, chat, dApp registry, audit, governance, projects, bank, and powerup UI
+surfaces through `dappreg::setsysui`.
+
+Harbor Social publishes public posts and articles through `harborsocial`. Feed
+commands hide archived posts by default, while full bodies live as public
+`harborstore` objects referenced by object id and content hash.
 
 ## Service Boundaries
 

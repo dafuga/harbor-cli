@@ -1,5 +1,6 @@
 import {Command} from 'commander'
 import {addTxOptions, pushJsonAction} from './action.js'
+import {printResult, serializeAction, transactActions} from '../lib/tx.js'
 
 type FieldType = 'string' | 'number' | 'boolean' | 'json'
 type Field = string | [string, FieldType]
@@ -10,6 +11,47 @@ interface DomainAction {
   action: string
   fields: Field[]
   signerField?: string
+}
+
+interface SystemUiDefinition {
+  dapp: string
+  title: string
+  surface: string
+  route: string
+}
+
+interface SystemUiSeedOptions {
+  contract: string
+  url?: string
+  actor?: string
+  permission?: string
+  key?: string
+  auth?: string
+  expiration?: string
+  json?: boolean
+}
+
+export const SYSTEM_UIS: SystemUiDefinition[] = [
+  {dapp: 'harbormarket', title: 'Harbor Market', surface: 'service-market', route: '/market'},
+  {dapp: 'harboragents', title: 'Harbor Agents', surface: 'agents', route: '/agents'},
+  {dapp: 'hbrstorage', title: 'Harbor Storage', surface: 'storage', route: '/storage'},
+  {dapp: 'harborsites', title: 'Harbor Sites', surface: 'sites', route: '/sites'},
+  {dapp: 'harborchat', title: 'Harbor Chat', surface: 'chat', route: '/chat'},
+  {dapp: 'harbordapps', title: 'Harbor dApps', surface: 'dapps', route: '/dapps'},
+  {dapp: 'harboraudit', title: 'Harbor Audit', surface: 'audit', route: '/audit'},
+  {dapp: 'harborgov', title: 'Harbor Governance', surface: 'governance', route: '/governance'},
+  {dapp: 'hbrprojects', title: 'Harbor Projects', surface: 'projects', route: '/projects'},
+  {dapp: 'harborbank', title: 'Harbor Bank', surface: 'bank', route: '/bank'},
+  {dapp: 'hbrpowerup', title: 'Harbor PowerUp', surface: 'powerup', route: '/powerup'},
+]
+
+export function systemUiActionData(ui: SystemUiDefinition): Record<string, unknown> {
+  return {
+    dapp: ui.dapp,
+    active: true,
+    title: ui.title,
+    metadata: JSON.stringify({system: true, surface: ui.surface, route: ui.route}),
+  }
 }
 
 function actionOptions(args: unknown[]): Record<string, string | boolean | undefined> {
@@ -99,13 +141,41 @@ export function createChatCommand(): Command {
 }
 
 export function createDappsCommand(): Command {
-  return domain('dapps', 'Manage Harbor dApp registry', 'dappreg', [
+  const dapps = domain('dapps', 'Manage Harbor dApp registry', 'dappreg', [
     {command: 'configure', action: 'setparams', fields: ['stake_contract', ['max_metadata_size', 'number']]},
     {command: 'register', action: 'regdapp', fields: ['dapp', 'owner', 'title', 'metadata'], signerField: 'owner'},
     {command: 'set', action: 'setdapp', fields: ['dapp', 'owner', ['active', 'boolean'], 'title', 'metadata'], signerField: 'owner'},
+    {command: 'set-system-ui', action: 'setsysui', fields: ['dapp', ['active', 'boolean'], 'title', 'metadata']},
     {command: 'use', action: 'usedapp', fields: ['user', 'dapp', ['usage_units', 'number']], signerField: 'user'},
     {command: 'rate', action: 'ratedapp', fields: ['voter', 'dapp', ['rating', 'number']], signerField: 'voter'},
   ])
+  addTxOptions(
+    dapps
+      .command('seed-system-uis')
+      .description('Put Harbor system UI entries on chain')
+      .option('-c, --contract <account>', 'contract account', 'dappreg')
+  ).action(async (options: SystemUiSeedOptions) => {
+    const contract = String(options.contract)
+    const actor = options.actor ?? contract
+    const actions = await Promise.all(
+      SYSTEM_UIS.map((ui) =>
+        serializeAction({
+          contract,
+          action: 'setsysui',
+          data: systemUiActionData(ui),
+          url: options.url,
+          actor,
+          permission: options.permission,
+          key: options.key,
+          authorization: options.auth,
+          expiration: options.expiration,
+        })
+      )
+    )
+    const result = await transactActions({...options, actor}, actions)
+    printResult(result, options.json)
+  })
+  return dapps
 }
 
 export function createAuditCommand(): Command {

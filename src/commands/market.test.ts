@@ -6,7 +6,7 @@ import {
   bestOpportunity,
   buildOpportunities,
 } from '@harbor/opportunities/market'
-import {buildMarketActionData} from './market.js'
+import {buildAgentOpportunityReportFromSnapshot, buildMarketActionData} from './market.js'
 
 function serviceType(id: number, name: string, budget: string): HarborServiceType {
   return {
@@ -133,4 +133,30 @@ test('referral market actions serialize expected payloads', () => {
     account: 'agent1111111',
     referrer: 'mentor11111',
   })
+})
+
+test('agent unable markers remove opportunities from best selection', () => {
+  const report = buildAgentOpportunityReportFromSnapshot(
+    {
+      types: [
+        serviceType(14, 'router', '10.0000 SYS'),
+        serviceType(1, 'chainapi', '4.0000 SYS'),
+      ],
+      services: [],
+      state: {reward_pool: '10.0000 SYS'},
+    },
+    [{
+      service_type: 14,
+      service_name: 'router',
+      reason: 'requires a domain',
+      metadata: '{"missing":"domain"}',
+      updated_at: '2026-05-05T00:00:00',
+    }],
+    'agent1111111'
+  )
+
+  assert.equal(report.best?.name, 'chainapi')
+  const router = report.opportunities.find((opportunity) => opportunity.name === 'router')
+  assert.equal(router?.status, 'unable')
+  assert.equal(router?.unableReason, 'requires a domain')
 })
