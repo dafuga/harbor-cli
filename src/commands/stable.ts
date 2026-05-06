@@ -69,11 +69,10 @@ function addReadCommands(stable: Command): void {
     const rows = await getTableRows(options.marketContract, 'priceaggs', {
       url: options.url,
       scope: options.marketContract,
-      lowerBound: pairId,
-      upperBound: pairId,
-      limit: 1,
+      limit: 1000,
     })
-    printResult(rows.rows[0] ?? null, options.json ?? true)
+    const row = rows.rows.find((item: any) => String(item.pair_id) === String(pairId))
+    printResult(row ?? null, options.json ?? true)
   })
 }
 
