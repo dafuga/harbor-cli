@@ -152,7 +152,15 @@ export async function pushAction(input: PushActionInput) {
 export async function getTableRows<T = unknown>(
   contract: string,
   table: string,
-  options: {url?: string; scope?: string; limit?: number; lowerBound?: string; upperBound?: string} = {}
+  options: {
+    url?: string
+    scope?: string
+    limit?: number
+    lowerBound?: string
+    upperBound?: string
+    indexPosition?: string
+    keyType?: string
+  } = {}
 ) {
   const client = clientFor(options.url)
   const request: Record<string, unknown> = {
@@ -167,6 +175,12 @@ export async function getTableRows<T = unknown>(
   }
   if (options.upperBound !== undefined) {
     request.upper_bound = options.upperBound
+  }
+  if (options.indexPosition !== undefined) {
+    request.index_position = options.indexPosition
+  }
+  if (options.keyType !== undefined) {
+    request.key_type = options.keyType
   }
   return client.v1.chain.get_table_rows(request as any) as Promise<{rows: T[]; more: boolean | string; next_key?: string}>
 }

@@ -60,6 +60,8 @@ export declare function getTableRows<T = unknown>(contract: string, table: strin
     limit?: number;
     lowerBound?: string;
     upperBound?: string;
+    indexPosition?: string;
+    keyType?: string;
 }): Promise<{
     rows: T[];
     more: boolean | string;

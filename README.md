@@ -11,6 +11,10 @@ harbor market opportunities --best --url http://127.0.0.1:8888
 harbor market opportunities unable myagent router "requires a domain"
 harbor market opportunities --best --agent myagent --json
 harbor market services --url http://127.0.0.1:8888
+harbor run router
+harbor run storage --source local --port 9102
+harbor run verifier --source harbor-storage --version v0.1.0
+harbor run router --source url --binary-url https://example.invalid/harbor-routerd --sha256 abc...
 harbor agent init --account myprovider
 harbor agent status
 harbor agent doctor
@@ -19,8 +23,11 @@ harbor agent launchd --service trace-api
 harbor agent launchd --service history-api
 harbor agent launchd --service history-actions
 harbor agent launchd --service storage
-harbor storage put ./artifact.bin
-harbor storage put ./artifact.bin --encrypt --private-key "$HARBOR_STORAGE_KEY"
+harbor storage put ./artifact.bin --owner myaccount
+harbor storage put ./artifact.bin --owner myaccount --encrypt --private-key "$HARBOR_STORAGE_KEY"
+harbor storage distribute ./artifact.bin --owner myaccount --object-id 7 --content-hash abc...
+harbor storage get --content-hash abc... --output ./harbor-routerd
+harbor storage put-local ./artifact.bin
 harbor storage manifest
 harbor storage serve
 harbor bank assets --json
@@ -54,14 +61,26 @@ command surface, but the market scoring and service-boundary guidance live in
 `harbor-opportunities`.
 
 The agent commands create a local `~/.harbor/config.json`, check local service
-ports, and generate launchd plists. `harbor storage put` copies an object into
-the local storage root, optionally encrypts it, and prints the hash fields needed
-for the `harborstore::putobject` action. The storage server exposes a lightweight
-manifest API that oracles and verifiers can sample:
+ports, and generate launchd plists. `harbor storage put` reads the file,
+optionally encrypts it, hashes the stored bytes, pushes
+`harborstore::putobject`, resolves the new object by content hash, discovers an
+active router from `svcmarket`, and sends the bytes to that router for replicated
+storage assignment. `harbor storage distribute` retries only the router
+distribution step after a successful chain registration. Provider/operator
+workflows that only need local content-addressed bytes can use
+`harbor storage put-local`. The storage server exposes a lightweight manifest
+API that oracles and verifiers can sample:
 
 - `GET /health`
 - `GET /manifest`
 - `GET /files/<path>`
+
+`harbor run <service>` is the foreground enterprise runner for local operators.
+It resolves a service binary from an existing install, sibling local repos,
+Harbor chain storage, GitHub releases, or a direct URL; downloaded binaries must
+match a SHA-256 checksum. Runtime binaries are cached under `~/.harbor/bin`,
+provenance is recorded in `~/.harbor/artifacts.json`, config is generated at
+`~/.harbor/runtime.toml`, and logs are mirrored to `~/.harbor/logs`.
 
 The bank commands target the `harborbank` vault contract. High-value
 withdrawals are a two-step flow: the multisig proposal executes the

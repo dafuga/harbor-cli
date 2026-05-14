@@ -16,6 +16,7 @@ import {
   createSitesCommand,
 } from './commands/domains.js'
 import {createMarketCommand} from './commands/market.js'
+import {createRunCommand} from './commands/run.js'
 import {createSignCommand} from './commands/sign.js'
 import {createSocialCommand} from './commands/social.js'
 import {createStableCommand} from './commands/stable.js'
@@ -29,6 +30,7 @@ program
   .name('harbor')
   .description('Harbor service-agent and market command line tools')
   .version('0.1.0')
+  .enablePositionalOptions()
 
 program.addCommand(createChainCommand())
 program.addCommand(createTableCommand())
@@ -37,6 +39,7 @@ program.addCommand(createSignCommand())
 program.addCommand(createContractCommand())
 program.addCommand(createWalletCommand())
 program.addCommand(createMarketCommand())
+program.addCommand(createRunCommand())
 program.addCommand(createAgentCommand())
 program.addCommand(createStorageCommand())
 program.addCommand(createSocialCommand())
