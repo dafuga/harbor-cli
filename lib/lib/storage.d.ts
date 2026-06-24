@@ -109,6 +109,19 @@ export interface ReplicatedPutOptions extends AuthOptions {
     storageContract?: string;
     routerUrl?: string;
 }
+export interface WalrusPutOptions extends AuthOptions {
+    file: string;
+    owner: string;
+    metadata?: string;
+    encrypt?: boolean;
+    privateKey?: string;
+    storageContract?: string;
+    walrusCommand?: string;
+    walrusPublisherUrl?: string;
+    walrusAggregatorUrl?: string;
+    walrusEpochs?: string | number;
+    contentFormat?: string;
+}
 export interface ReplicatedPutResult {
     sourcePath: string;
     content_hash: string;
@@ -124,7 +137,30 @@ export interface ReplicatedPutResult {
     assignment_tx?: string;
     distribution: RouterDistributionResult;
 }
+export interface WalrusStoreRefs {
+    blob_id: string;
+    sui_object_id?: string;
+    publisher_url?: string;
+    aggregator_url?: string;
+    epochs?: number;
+    content_format?: string;
+    response: unknown;
+}
+export interface WalrusPutResult {
+    sourcePath: string;
+    content_hash: string;
+    source_hash: string;
+    bytes: number;
+    encrypted: boolean;
+    encryption_key_hash: string;
+    object_id: number;
+    put_tx?: string;
+    metadata: string;
+    walrus: WalrusStoreRefs;
+}
 export declare function sha256Bytes(bytes: Buffer | string): string;
+export declare function parseWalrusStoreResponse(output: string, refs?: Omit<WalrusStoreRefs, 'blob_id' | 'response'>): WalrusStoreRefs;
+export declare function buildWalrusMetadata(metadata: string, walrus: WalrusStoreRefs): string;
 export declare function prepareStoredObject(options: Omit<StoreObjectOptions, 'root'>): Promise<PreparedStorageObject>;
 export declare function storeObject(options: StoreObjectOptions): Promise<StoredObjectResult>;
 export declare function selectBestRouter(services: MarketServiceRow[]): MarketServiceRow;
@@ -152,6 +188,7 @@ export declare function downloadStoredObjectBytes(options: Omit<StorageDownloadO
 }>;
 export declare function downloadStoredObject(options: StorageDownloadOptions): Promise<StorageDownloadResult>;
 export declare function putReplicatedObject(options: ReplicatedPutOptions): Promise<ReplicatedPutResult>;
+export declare function putWalrusObject(options: WalrusPutOptions): Promise<WalrusPutResult>;
 export declare function distributeStoredObject(options: Omit<ReplicatedPutOptions, 'storageContract'> & {
     objectId: number;
     contentHash: string;

@@ -70,6 +70,8 @@ test('renderRuntimeConfig sets base port and includes all service providers', ()
   assert.equal(config.includes('data_dir = "/tmp/harbor-data"'), true)
   assert.match(config, /service_type = "router"/)
   assert.match(config, /service_type = "appealcmte"/)
+  assert.match(config, /trusted_checker_endpoint = ""/)
+  assert.match(config, /trusted_checker_min_score_bps = 8500/)
   assert.equal(config.includes('repo = "/tmp/harbor-history"'), true)
 })
 

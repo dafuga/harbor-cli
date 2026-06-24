@@ -2,6 +2,7 @@
 import {Command} from 'commander'
 import {createActionCommand} from './commands/action.js'
 import {createAgentCommand} from './commands/agent.js'
+import {createAiCommand} from './commands/ai.js'
 import {createBankCommand} from './commands/bank.js'
 import {createChainCommand} from './commands/chain.js'
 import {createContractCommand} from './commands/contract.js'
@@ -41,6 +42,7 @@ program.addCommand(createWalletCommand())
 program.addCommand(createMarketCommand())
 program.addCommand(createRunCommand())
 program.addCommand(createAgentCommand())
+program.addCommand(createAiCommand())
 program.addCommand(createStorageCommand())
 program.addCommand(createSocialCommand())
 program.addCommand(createBankCommand())

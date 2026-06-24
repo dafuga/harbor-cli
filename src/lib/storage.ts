@@ -1,6 +1,8 @@
 import crypto from 'node:crypto'
+import {spawn} from 'node:child_process'
 import fs from 'node:fs/promises'
 import http from 'node:http'
+import os from 'node:os'
 import path from 'node:path'
 import {getTableRows, pushAction} from './tx.js'
 import type {AuthOptions} from './tx.js'
@@ -126,6 +128,20 @@ export interface ReplicatedPutOptions extends AuthOptions {
   routerUrl?: string
 }
 
+export interface WalrusPutOptions extends AuthOptions {
+  file: string
+  owner: string
+  metadata?: string
+  encrypt?: boolean
+  privateKey?: string
+  storageContract?: string
+  walrusCommand?: string
+  walrusPublisherUrl?: string
+  walrusAggregatorUrl?: string
+  walrusEpochs?: string | number
+  contentFormat?: string
+}
+
 export interface ReplicatedPutResult {
   sourcePath: string
   content_hash: string
@@ -140,6 +156,29 @@ export interface ReplicatedPutResult {
   replica_count: number
   assignment_tx?: string
   distribution: RouterDistributionResult
+}
+
+export interface WalrusStoreRefs {
+  blob_id: string
+  sui_object_id?: string
+  publisher_url?: string
+  aggregator_url?: string
+  epochs?: number
+  content_format?: string
+  response: unknown
+}
+
+export interface WalrusPutResult {
+  sourcePath: string
+  content_hash: string
+  source_hash: string
+  bytes: number
+  encrypted: boolean
+  encryption_key_hash: string
+  object_id: number
+  put_tx?: string
+  metadata: string
+  walrus: WalrusStoreRefs
 }
 
 async function hashFile(filePath: string): Promise<string> {
@@ -180,6 +219,102 @@ function encryptBytes(bytes: Buffer, privateKey: string): Buffer {
 
 function objectPath(root: string, contentHash: string): string {
   return path.join(root, 'objects', contentHash.slice(0, 2), contentHash)
+}
+
+function collectStrings(value: unknown, keyMatcher: (key: string) => boolean): string | undefined {
+  if (!value || typeof value !== 'object') {
+    return undefined
+  }
+  for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
+    if (keyMatcher(key) && typeof child === 'string' && child.length > 0) {
+      return child
+    }
+    const nested = collectStrings(child, keyMatcher)
+    if (nested) {
+      return nested
+    }
+  }
+  return undefined
+}
+
+export function parseWalrusStoreResponse(
+  output: string,
+  refs: Omit<WalrusStoreRefs, 'blob_id' | 'response'> = {},
+): WalrusStoreRefs {
+  let response: unknown
+  try {
+    response = JSON.parse(output)
+  } catch {
+    response = {stdout: output}
+  }
+  const blobId = collectStrings(response, (key) => ['blob_id', 'blobId', 'blobID'].includes(key))
+  if (!blobId) {
+    throw new Error('Walrus store response did not include a blob id')
+  }
+  return {
+    blob_id: blobId,
+    sui_object_id: collectStrings(response, (key) => ['sui_object_id', 'suiObjectId', 'object_id', 'objectId'].includes(key)),
+    ...refs,
+    response,
+  }
+}
+
+export function buildWalrusMetadata(metadata: string, walrus: WalrusStoreRefs): string {
+  let base: Record<string, unknown>
+  try {
+    const parsed = JSON.parse(metadata)
+    base = parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed as Record<string, unknown> : {value: parsed}
+  } catch {
+    base = metadata ? {label: metadata} : {}
+  }
+  return JSON.stringify({
+    ...base,
+    storage_backend: 'walrus',
+    walrus: {
+      blob_id: walrus.blob_id,
+      sui_object_id: walrus.sui_object_id,
+      publisher_url: walrus.publisher_url,
+      aggregator_url: walrus.aggregator_url,
+      epochs: walrus.epochs,
+      content_format: walrus.content_format,
+    },
+  })
+}
+
+async function runWalrusStore(file: string, options: WalrusPutOptions): Promise<WalrusStoreRefs> {
+  const command = options.walrusCommand ?? process.env.WALRUS_CLI ?? 'walrus'
+  const args = ['store', file, '--json']
+  if (options.walrusPublisherUrl) {
+    args.push('--publisher', options.walrusPublisherUrl)
+  }
+  if (options.walrusEpochs !== undefined) {
+    args.push('--epochs', String(options.walrusEpochs))
+  }
+
+  const output = await new Promise<string>((resolve, reject) => {
+    const child = spawn(command, args, {stdio: ['ignore', 'pipe', 'pipe']})
+    const stdout: Buffer[] = []
+    const stderr: Buffer[] = []
+    child.stdout.on('data', (chunk) => stdout.push(Buffer.from(chunk)))
+    child.stderr.on('data', (chunk) => stderr.push(Buffer.from(chunk)))
+    child.on('error', reject)
+    child.on('close', (code) => {
+      const out = Buffer.concat(stdout).toString()
+      const err = Buffer.concat(stderr).toString()
+      if (code !== 0) {
+        reject(new Error(`walrus store failed (${code}): ${err || out}`))
+        return
+      }
+      resolve(out)
+    })
+  })
+
+  return parseWalrusStoreResponse(output, {
+    publisher_url: options.walrusPublisherUrl,
+    aggregator_url: options.walrusAggregatorUrl,
+    epochs: options.walrusEpochs === undefined ? undefined : Number(options.walrusEpochs),
+    content_format: options.contentFormat,
+  })
 }
 
 export async function prepareStoredObject(options: Omit<StoreObjectOptions, 'root'>): Promise<PreparedStorageObject> {
@@ -560,6 +695,63 @@ export async function putReplicatedObject(options: ReplicatedPutOptions): Promis
     replica_count: Number(distribution.replica_count ?? 0),
     assignment_tx: typeof distribution.assignment_tx === 'string' ? distribution.assignment_tx : undefined,
     distribution,
+  }
+}
+
+export async function putWalrusObject(options: WalrusPutOptions): Promise<WalrusPutResult> {
+  const storageContract = options.storageContract ?? process.env.HARBOR_STORAGE_CONTRACT ?? 'harborstore'
+  const prepared = await prepareStoredObject(options)
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'harbor-walrus-'))
+  const walrusPath = path.join(tempDir, prepared.contentHash)
+  try {
+    await fs.writeFile(walrusPath, prepared.storedBytes)
+    const written = await fs.readFile(walrusPath)
+    const writtenHash = sha256(written)
+    if (writtenHash !== prepared.contentHash) {
+      throw new Error(`prepared Walrus bytes failed SHA-256 verification: ${writtenHash}`)
+    }
+
+    const walrus = await runWalrusStore(walrusPath, options)
+    const metadata = buildWalrusMetadata(prepared.metadata, walrus)
+    const putResult = await pushAction({
+      contract: storageContract,
+      action: 'putobject',
+      data: {
+        owner: options.owner,
+        content_hash: prepared.contentHash,
+        bytes: prepared.bytes,
+        encrypted: prepared.encrypted,
+        encryption_key_hash: prepared.encryptionKeyHash,
+        metadata,
+      },
+      url: options.url,
+      actor: options.actor ?? options.owner,
+      permission: options.permission,
+      key: options.key,
+      expiration: options.expiration,
+      json: options.json,
+    })
+    const objectId = await resolveStorageObjectId({
+      url: options.url,
+      storageContract,
+      owner: options.owner,
+      contentHash: prepared.contentHash,
+    })
+
+    return {
+      sourcePath: prepared.sourcePath,
+      content_hash: prepared.contentHash,
+      source_hash: prepared.sourceHash,
+      bytes: prepared.bytes,
+      encrypted: prepared.encrypted,
+      encryption_key_hash: prepared.encryptionKeyHash,
+      object_id: objectId,
+      put_tx: (putResult as {transaction_id?: string}).transaction_id,
+      metadata,
+      walrus,
+    }
+  } finally {
+    await fs.rm(tempDir, {recursive: true, force: true})
   }
 }
 

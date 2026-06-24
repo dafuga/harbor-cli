@@ -24,12 +24,26 @@ harbor agent launchd --service history-api
 harbor agent launchd --service history-actions
 harbor agent launchd --service storage
 harbor storage put ./artifact.bin --owner myaccount
+harbor storage put ./weights.safetensors --owner myaccount --backend walrus --walrus-epochs 5 --metadata '{"kind":"weights"}'
 harbor storage put ./artifact.bin --owner myaccount --encrypt --private-key "$HARBOR_STORAGE_KEY"
 harbor storage distribute ./artifact.bin --owner myaccount --object-id 7 --content-hash abc...
 harbor storage get --content-hash abc... --output ./harbor-routerd
 harbor storage put-local ./artifact.bin
 harbor storage manifest
 harbor storage serve
+harbor ai offer inference mygpu111111 http://127.0.0.1:9117 --range-start 1 --range-end 1 --metadata '{"models":[1]}'
+harbor ai offer training mygpu111111 http://127.0.0.1:9118 --metadata '{"gpus":["local"]}'
+harbor ai offer router airouter1111 http://127.0.0.1:9113 --metadata '{"policy_id":1}'
+harbor ai tune needs --confidence-bps 8500 --proposer myaccount --dataset-artifact-id 42 --json
+harbor ai tune auto-vote --voter myaccount --user myaccount --quantity "1.0000 SYS" --dry-run --json
+harbor ai trust aegis-config ~/.harbor/aegis.config.json --command /absolute/path/to/trusted-judge
+harbor ai trust aegis-env --config ~/.harbor/aegis.config.json
+harbor ai trust aegis-smoke --config ~/.harbor/aegis.config.json --json
+HARBOR_AI_BACKEND_ENDPOINT=http://127.0.0.1:8080/v1/infer harbor run aiinfer
+HARBOR_AI_TRUSTED_CHECKER_COMMAND="python /path/to/trusted-ai/check.py" harbor run router
+harbor run router
+harbor contract upload --account cooldapp1111 --owner myaccount --title "Cool dApp" --wasm ./cool.wasm --abi ./cool.abi --dependencies '[{"contract":"eosio.token","chain_uid":"game1"}]' --json
+harbor contract place --manifest-hash abc... --creator eosio --owner-key "$PUBKEY" --active-key "$PUBKEY" --stake-net "1.0000 SYS" --stake-cpu "1.0000 SYS" --key "$EOSIO_KEY,$CONTRACT_KEY,$OWNER_KEY" --json
 harbor bank assets --json
 harbor bank balances myaccount --json
 harbor bank open myaccount "50.0000 SYS" "5.0000 SYS"
@@ -75,6 +89,13 @@ API that oracles and verifiers can sample:
 - `GET /manifest`
 - `GET /files/<path>`
 
+For large AI weights, `harbor storage put --backend walrus` stores the prepared
+bytes with Walrus, verifies the SHA-256 bytes Harbor will register, pushes the
+same hash to `harborstore`, and preserves Walrus `blob_id`, Sui object id when
+reported, publisher/aggregator URLs, epochs, and content format in object
+metadata. `harborstore` remains the on-chain source of truth; Walrus is an
+optional storage backend reference.
+
 `harbor run <service>` is the foreground enterprise runner for local operators.
 It resolves a service binary from an existing install, sibling local repos,
 Harbor chain storage, GitHub releases, or a direct URL; downloaded binaries must
@@ -87,10 +108,60 @@ withdrawals are a two-step flow: the multisig proposal executes the
 `approvewd` gate under the configured high-value permission, then the owner
 submits the active-key `withdraw` that consumes that approval.
 
+The AI commands wrap the Harbor AI contracts and the service market. `harbor ai
+offer inference`, `harbor ai offer training`, and `harbor ai offer router`
+register the provider if needed, stake it, and add the correct `svcmarket`
+service type (`aiinfer`, `aitrain`, or `airouter`). Run `harbor run aiinfer`
+with `HARBOR_AI_BACKEND_ENDPOINT` pointing at a local GPU HTTP backend to earn
+inference fees through `harborai::completeinf`; route clients through
+`harbor run router` or `harbor run airouter`. Fine-tune demand can be requested
+on chain with `harbor ai tune propose`/`request`, voted with `harbor ai tune
+vote`, and settled through the `harbor ai train` lifecycle. `harbor ai tune
+needs` reads `harborai` routing and model-subcall audit logs, groups
+low-confidence/fallback routes into candidate fine-tune requests, and prints
+`harbor ai tune request` templates once a dataset artifact is available.
+Routers can also call a trusted-output checker with
+`HARBOR_AI_TRUSTED_CHECKER_ENDPOINT` or `HARBOR_AI_TRUSTED_CHECKER_COMMAND`;
+HTTP checkers receive request/output JSON directly, while command checkers
+receive a JSON payload file path as their first argument. They return fields
+such as `score_bps`, `needs_tune`, `task`, and `reason`. Those trusted signals are
+preserved in route-log metadata, and `harbor ai tune auto-vote` can use them to
+cast escrowed votes for open fine-tune proposals that match the current user's
+needs.
+
+If your trusted reviewer is configured through Aegis, use the same adapter for
+router checks and vote approval. The helper commands generate the Aegis config,
+print the exact Harbor runtime export, and smoke-test the adapter before live
+traffic uses it:
+
+```sh
+harbor ai trust aegis-config ~/.harbor/aegis.config.json \
+  --command /absolute/path/to/trusted-judge
+harbor ai trust aegis-smoke --config ~/.harbor/aegis.config.json --json
+eval "$(harbor ai trust aegis-env --config ~/.harbor/aegis.config.json)"
+harbor run router
+
+harbor ai tune auto-vote --voter myaccount --quantity "1.0000 SYS" \
+  --adapter-command "$HARBOR_AI_TRUSTED_CHECKER_COMMAND"
+```
+
 The dApp registry command can seed Harbor-owned system UI rows on chain with
 `harbor dapps seed-system-uis`. It writes the service market, agents, storage,
 sites, chat, dApp registry, audit, governance, projects, bank, and powerup UI
 surfaces through `dappreg::setsysui`.
+
+The contract placement commands use Harbor storage as the artifact source of
+truth. `harbor contract upload` uploads WASM, ABI, and a compact
+`harbor-contract-manifest` object. `harbor contract place` downloads that
+manifest, picks the active non-saturated sidechain with enough recorded RAM and
+the lowest live `eosio::rammarket` price, deploys the contract there, and records
+`{"placement":{"chain_uid":"...","manifest_hash":"..."}}` in `dappreg`.
+Dependencies in the manifest can pin placement with
+`{"contract":"token","chain_uid":"game1"}`. If placement must create the
+contract account, pass `--owner-key` and `--active-key`; it also stakes
+`1.0000 SYS` each to NET and CPU by default, overrideable with `--stake-net` and
+`--stake-cpu`. When creator, contract-account, and registry-owner signatures
+differ, pass comma-separated private keys through `--key`.
 
 Harbor Social publishes public posts and articles through `harborsocial`. Posts
 can omit titles and can point at text and/or cover image storage objects.

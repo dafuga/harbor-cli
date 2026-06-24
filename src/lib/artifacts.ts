@@ -78,6 +78,10 @@ export const SERVICE_RUNTIMES: ServiceRuntime[] = [
   {name: 'router', aliases: ['routerd'], daemon: 'harbor-routerd', serviceTypeId: 14, portOffset: 13},
   {name: 'sitegw', aliases: ['site-gateway'], daemon: 'harbor-sitegwd', serviceTypeId: 15, portOffset: 14},
   {name: 'appealcmte', aliases: ['appeal-committee'], daemon: 'harbor-appeal-committeed', serviceTypeId: 16, portOffset: 15},
+  {name: 'pricefeed', aliases: ['price-feed'], daemon: 'harbor-pricefeedd', serviceTypeId: 17, portOffset: 16},
+  {name: 'aiinfer', aliases: ['ai-infer', 'inference', 'inference-host'], daemon: 'harbor-aiinferd', serviceTypeId: 18, portOffset: 17},
+  {name: 'aitrain', aliases: ['ai-train', 'training', 'trainer'], daemon: 'harbor-aitraind', serviceTypeId: 19, portOffset: 18},
+  {name: 'airouter', aliases: ['ai-router', 'model-router'], daemon: 'harbor-airouterd', serviceTypeId: 20, portOffset: 19},
   {name: 'scheduler', aliases: ['check-scheduler'], daemon: 'harbor-check-scheduler', serviceTypeId: 13, portOffset: 50},
 ]
 

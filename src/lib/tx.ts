@@ -123,7 +123,7 @@ export async function transactActions(options: AuthOptions, actions: Action[] | 
   const client = clientFor(url)
   const info = await client.v1.chain.get_info()
   const auth = permissionLevel(options)
-  const walletPlugin = await walletPluginFor(options.key, auth.actor)
+  const walletPlugin = await walletPluginFor(options.key, auth.actor, url)
   const session = new Session({
     chain: {id: info.chain_id, url},
     actor: auth.actor,

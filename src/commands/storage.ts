@@ -1,6 +1,6 @@
 import {Command} from 'commander'
 import {defaultStorageDir} from '../lib/config.js'
-import {buildStorageManifest, distributeStoredObject, downloadStoredObject, putReplicatedObject, serveStorageManifest, storeObject} from '../lib/storage.js'
+import {buildStorageManifest, distributeStoredObject, downloadStoredObject, putReplicatedObject, putWalrusObject, serveStorageManifest, storeObject} from '../lib/storage.js'
 import {addTxOptions} from './action.js'
 import {addJsonActionCommand, Field} from './action-fields.js'
 
@@ -12,20 +12,32 @@ function addLocalStorageCommands(storage: Command): void {
       .command('put <file>')
       .description('Register a Harbor storage object and distribute it through the best active router')
       .requiredOption('--owner <account>', 'Harbor account that owns the storage object')
+      .option('--backend <backend>', 'storage backend: harbor or walrus', 'harbor')
       .option('--metadata <metadata>', 'object metadata to register on-chain')
       .option('--encrypt', 'encrypt the stored bytes with a key derived from --private-key')
       .option('--private-key <key>', 'private key material used for local encryption')
       .option('--market-contract <account>', 'service market contract account', process.env.HARBOR_MARKET_CONTRACT ?? 'svcmarket')
       .option('--storage-contract <account>', 'storage registry contract account', STORAGE_CONTRACT)
       .option('--router-url <url>', 'explicit router endpoint; skips market router discovery')
+      .option('--walrus-command <path>', 'Walrus CLI command', process.env.WALRUS_CLI ?? 'walrus')
+      .option('--walrus-publisher-url <url>', 'Walrus publisher URL')
+      .option('--walrus-aggregator-url <url>', 'Walrus aggregator URL to preserve in metadata')
+      .option('--walrus-epochs <epochs>', 'Walrus storage epochs')
+      .option('--content-format <format>', 'content format preserved in Walrus metadata')
   ).action(async (file: string, options: {
     owner: string
+    backend?: string
     metadata?: string
     encrypt?: boolean
     privateKey?: string
     marketContract?: string
     storageContract?: string
     routerUrl?: string
+    walrusCommand?: string
+    walrusPublisherUrl?: string
+    walrusAggregatorUrl?: string
+    walrusEpochs?: string
+    contentFormat?: string
     url?: string
     actor?: string
     permission?: string
@@ -33,6 +45,13 @@ function addLocalStorageCommands(storage: Command): void {
     json?: boolean
     expiration?: string
   }) => {
+    if (options.backend === 'walrus') {
+      console.log(JSON.stringify(await putWalrusObject({...options, file}), null, 2))
+      return
+    }
+    if (options.backend && options.backend !== 'harbor') {
+      throw new Error(`unknown storage backend: ${options.backend}`)
+    }
     console.log(JSON.stringify(await putReplicatedObject({...options, file}), null, 2))
   })
 
