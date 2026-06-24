@@ -996,7 +996,7 @@ export function createAiCommand(): Command {
     {
       command: 'start',
       action: 'starttrain',
-      fields: ['creator', ['tune_id', 'number'], ['base_model_id', 'number'], ['dataset_artifact_id', 'number'], 'reward', ['min_score', 'number'], 'metadata', ['expires_sec', 'number']],
+      fields: ['creator', ['tune_id', 'number'], ['base_model_id', 'number'], ['dataset_artifact_id', 'number'], 'reward', ['max_submissions', 'number'], 'metadata', ['expires_sec', 'number']],
       signerField: 'creator',
     },
     {

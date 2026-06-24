@@ -7,6 +7,7 @@ import {
   aegisHarborCheckCommand,
   buildTuneAutoVotePlan,
   buildTuneNeeds,
+  createAiCommand,
   renderAegisConfig,
   runTrustedAiAdapter,
 } from './ai.js'
@@ -123,6 +124,24 @@ test('buildTuneAutoVotePlan matches open proposals by base model and task', () =
   assert.equal(plans[0].tune_id, 3)
   assert.equal(plans[0].quantity, '2.0000 SYS')
   assert.equal(plans[0].approve, true)
+})
+
+test('ai train start exposes the starttrain max_submissions argument', () => {
+  const ai = createAiCommand()
+  const train = ai.commands.find((command) => command.name() === 'train')
+  const start = train?.commands.find((command) => command.name() === 'start')
+  const argumentNames = start?.registeredArguments.map((argument) => argument.name())
+
+  assert.deepEqual(argumentNames, [
+    'creator',
+    'tune_id',
+    'base_model_id',
+    'dataset_artifact_id',
+    'reward',
+    'max_submissions',
+    'metadata',
+    'expires_sec',
+  ])
 })
 
 test('runTrustedAiAdapter command passes a JSON payload file path', async () => {
