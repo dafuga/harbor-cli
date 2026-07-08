@@ -129,6 +129,44 @@ preserved in route-log metadata, and `harbor ai tune auto-vote` can use them to
 cast escrowed votes for open fine-tune proposals that match the current user's
 needs.
 
+Routers can keep privacy-preserving local inference traces and expose useful
+records as decentralized training data only after the edge operator packages
+them. `harbor ai data pack <trace_dir>` reads `candidates.jsonl`, keeps explicit
+corrections/accepted answers plus high-scoring captured outputs, and writes a
+chat JSONL dataset plus a canonical `harbor.ai.query-dataset.v1` manifest. Store
+and register that dataset with `harbor ai data register`, then attach it to a
+tune with `harbor ai data contribute`:
+
+```sh
+harbor ai data pack ~/.harbor/ai-traces \
+  --contributor myaccount \
+  --base-model-id 1 \
+  --expert-role code \
+  --output query-dataset.jsonl \
+  --manifest-output query-dataset.manifest.json
+harbor ai data register myaccount query-dataset.jsonl \
+  --manifest query-dataset.manifest.json \
+  --backend walrus
+harbor ai data contribute myaccount 1 <dataset_artifact_id> \
+  --manifest-hash <manifest_hash>
+```
+
+Fusion models are registered as normal Harbor AI models whose weights artifact
+is a canonical `harbor.fusion.v1` manifest. Use
+`harbor ai fusion manifest create` to build one from explicit experts or
+`--auto-experts <count>` for router-side capability discovery, then
+`harbor ai fusion register` to store the manifest through Harborstore/Walrus and
+call the existing `addartifact` and `regmodel` actions. `harbor ai fusion
+inspect` reads the model, manifest artifact metadata, route logs, and subcalls
+to show which experts participated.
+
+For distributed expert training, use `harbor ai fusion distributed plan` to
+assign deterministic shard metadata across participant trainers. Each shard can
+be submitted through the normal `harbor ai train` lifecycle, then
+`harbor ai fusion distributed aggregation manifest` records the shard artifact
+hashes for a weighted LoRA aggregate produced off-chain by the training
+coordinator.
+
 If your trusted reviewer is configured through Aegis, use the same adapter for
 router checks and vote approval. The helper commands generate the Aegis config,
 print the exact Harbor runtime export, and smoke-test the adapter before live
