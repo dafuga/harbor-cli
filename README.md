@@ -133,9 +133,18 @@ Routers can keep privacy-preserving local inference traces and expose useful
 records as decentralized training data only after the edge operator packages
 them. `harbor ai data pack <trace_dir>` reads `candidates.jsonl`, keeps explicit
 corrections/accepted answers plus high-scoring captured outputs, and writes a
-chat JSONL dataset plus a canonical `harbor.ai.query-dataset.v1` manifest. Store
-and register that dataset with `harbor ai data register`, then attach it to a
-tune with `harbor ai data contribute`:
+chat JSONL dataset plus a canonical `harbor.ai.query-dataset.v2` manifest.
+Every included trace must carry an active, unrevoked, versioned consent receipt
+with training, prompt, and response scopes and a successful PII-review hash. A bare
+`training_candidate` flag is never sufficient, even with `--include-all`.
+Direct user identifiers are omitted from example provenance; policy, campaign,
+and consent receipt hashes remain auditable.
+
+Because the resulting dataset contains consented prompt and completion text,
+`harbor ai data register` requires a v2 manifest and encrypts the object before
+upload. Supply a local encryption secret through `HARBOR_AI_DATA_KEY` or
+`--private-key`. Store and register that dataset, then attach it to a tune with
+`harbor ai data contribute`:
 
 ```sh
 harbor ai data pack ~/.harbor/ai-traces \
@@ -146,10 +155,63 @@ harbor ai data pack ~/.harbor/ai-traces \
   --manifest-output query-dataset.manifest.json
 harbor ai data register myaccount query-dataset.jsonl \
   --manifest query-dataset.manifest.json \
+  --private-key "$HARBOR_AI_DATA_KEY" \
   --backend walrus
 harbor ai data contribute myaccount 1 <dataset_artifact_id> \
   --manifest-hash <manifest_hash>
 ```
+
+Continuous specialist distillation is an explicit lifecycle; no command starts
+automatically after installation. A community first accepts a tune whose
+dataset reference is the public data-policy artifact. The program owner then
+opens and funds the campaign, users grant versioned scope bits and opt
+individual unassigned routed requests in, and a curator seals only encrypted
+datasets:
+
+```sh
+harbor ai distill open <owner> <program_id> <accepted_tune_id> <teacher_model_id> \
+  7 1000 '0.2500 SYS' '25.0000 SYS' 32 512 8500 9500 9000 \
+  100 9900 \
+  'Coding specialist distillation' '{"worker_enabled":false}'
+harbor ai distill consent <user> <campaign_id> 7 2592000
+harbor ai distill opt-in <user> <infer_id> <campaign_id>
+harbor ai distill open-batch <owner> <campaign_id> <curator> '{}'
+harbor ai distill add-sample <curator> <batch_id> <infer_id> <evidence_hash>
+harbor ai distill seal-batch <curator> <batch_id> <encrypted_dataset_artifact_id>
+```
+
+Here scope `7` means training plus prompt and response use, while `100 9900`
+requires at least 100 independently reported canary requests with 99% success.
+The campaign-funded rebate is reserved before assignment, the provider still
+receives the gross
+settled fee, and the requester receives the actual discount as program-scoped
+inference credit. Training, independent batch scoring, and promotion remain
+separate `start-batch`, `score-batch`, `report-canary`, and `promote-batch`
+actions. `cancel-batch` safely releases samples from an unsealed batch.
+
+API-only models such as Kimi K3 are registered from a public, immutable remote
+manifest and terms artifact; the manifest is never mislabelled as weights.
+Remote execution mode is `2`, and K3's preserved-history flags require requests
+to use an explicit session whose first assignment pins the serving deployment:
+
+```sh
+harbor ai model register-remote <owner> 1 0 <manifest_artifact_id> \
+  <revision_hash> <terms_artifact_id> true true true 0 kimi-k3 \
+  'Kimi K3 API' '{"worker_enabled":false}'
+harbor ai program set-model-spec <owner> <k3_model_id> <program_id> \
+  <revision_hash> <terms_artifact_id> <compute_class> 2800000 0 1000000 0 0 '{}'
+harbor ai provider configure-deployment <provider> <deployment_id> \
+  2 <k3_model_id> 0 0 0 0 0 <zero_hash> <runtime_hash> 1000000 '{}'
+harbor ai session open <user> <program_id> true 3600 '{}'
+harbor ai session request <user> <session_id> <min_class> <max_class> \
+  0 <prompt_hash> 1000000 4096 '25.0000 SYS' 120000 true '{}'
+```
+
+Self-hosted execution mode is `1`; its deployment configuration instead uses a
+public provider-owned topology artifact. Interconnect values are local `1`,
+Ethernet `2`, Thunderbolt `3`, and InfiniBand `4`, so different Apple-silicon
+Macs can participate in one logical deployment when the topology and runtime
+actually validate that model.
 
 Fusion models are registered as normal Harbor AI models whose weights artifact
 is a canonical `harbor.fusion.v1` manifest. Use

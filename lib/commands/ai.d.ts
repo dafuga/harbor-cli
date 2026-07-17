@@ -152,7 +152,7 @@ export interface QueryDatasetExample {
     rejected_completion?: string;
 }
 export interface QueryDatasetManifest {
-    format: 'harbor.ai.query-dataset.v1';
+    format: 'harbor.ai.query-dataset.v2';
     dataset_format: 'chat_messages_jsonl';
     dataset_hash: string;
     source: 'harbor-ai-query-traces';
@@ -166,6 +166,9 @@ export interface QueryDatasetManifest {
     example_hashes: string[];
     prompt_hashes: string[];
     trace_hashes: string[];
+    campaign_ids: number[];
+    consent_policy_hashes: string[];
+    consent_receipt_hashes: string[];
     quality_policy: Record<string, unknown>;
     privacy_policy: Record<string, unknown>;
     training_metadata?: Record<string, unknown>;
@@ -192,8 +195,23 @@ export interface QueryDatasetPackOptions {
     include_low_score?: boolean;
     include_unscored?: boolean;
     max_examples?: number;
+    as_of_epoch_sec?: number;
+}
+export declare const AI_DATA_SCOPE_TRAINING = 1;
+export declare const AI_DATA_SCOPE_PROMPT = 2;
+export declare const AI_DATA_SCOPE_RESPONSE = 4;
+export declare const AI_DATA_REQUIRED_SCOPES: number;
+export interface AiDataConsentReceipt {
+    campaign_id: number;
+    program_id: number;
+    consent_version: number;
+    scope_bits: number;
+    policy_hash: string;
+    receipt_hash: string;
+    expires_at: number;
 }
 export declare function canonicalJson(value: unknown): string;
+export declare function parseActiveDataConsent(record: Record<string, unknown>, asOfEpochSec?: number): AiDataConsentReceipt | undefined;
 export declare function buildQueryDatasetFromTraces(lines: string[], options?: QueryDatasetPackOptions): QueryDatasetPack;
 export declare function parseFusionExpertSpec(value: string): FusionExpertSpec;
 export declare function buildFusionManifest(input: FusionManifestInput): FusionManifest;
@@ -234,4 +252,5 @@ export declare function buildTuneAutoVotePlan(needs: TuneNeed[], tunes: TuneRequ
     quantity: string;
 }): TuneAutoVotePlan[];
 export declare function runTrustedAiAdapter(input: unknown, options: TrustedAiAdapterOptions): Promise<TrustedAiDecision>;
+export declare function validateQueryDatasetManifest(parsed: unknown, label?: string): QueryDatasetManifest;
 export declare function createAiCommand(): Command;

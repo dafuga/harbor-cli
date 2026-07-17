@@ -235,7 +235,7 @@ export interface QueryDatasetExample {
 }
 
 export interface QueryDatasetManifest {
-  format: 'harbor.ai.query-dataset.v1'
+  format: 'harbor.ai.query-dataset.v2'
   dataset_format: 'chat_messages_jsonl'
   dataset_hash: string
   source: 'harbor-ai-query-traces'
@@ -249,6 +249,9 @@ export interface QueryDatasetManifest {
   example_hashes: string[]
   prompt_hashes: string[]
   trace_hashes: string[]
+  campaign_ids: number[]
+  consent_policy_hashes: string[]
+  consent_receipt_hashes: string[]
   quality_policy: Record<string, unknown>
   privacy_policy: Record<string, unknown>
   training_metadata?: Record<string, unknown>
@@ -277,6 +280,22 @@ export interface QueryDatasetPackOptions {
   include_low_score?: boolean
   include_unscored?: boolean
   max_examples?: number
+  as_of_epoch_sec?: number
+}
+
+export const AI_DATA_SCOPE_TRAINING = 1
+export const AI_DATA_SCOPE_PROMPT = 2
+export const AI_DATA_SCOPE_RESPONSE = 4
+export const AI_DATA_REQUIRED_SCOPES = AI_DATA_SCOPE_TRAINING | AI_DATA_SCOPE_PROMPT | AI_DATA_SCOPE_RESPONSE
+
+export interface AiDataConsentReceipt {
+  campaign_id: number
+  program_id: number
+  consent_version: number
+  scope_bits: number
+  policy_hash: string
+  receipt_hash: string
+  expires_at: number
 }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
@@ -412,6 +431,108 @@ function incrementSkipped(skipped: Record<string, number>, reason: string): void
   skipped[reason] = (skipped[reason] ?? 0) + 1
 }
 
+function positiveInteger(value: unknown): number | undefined {
+  const parsed = Number(value)
+  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : undefined
+}
+
+function epochSeconds(value: unknown): number | undefined {
+  if (typeof value === 'number' || (typeof value === 'string' && /^\d+$/.test(value))) {
+    const parsed = Number(value)
+    return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : undefined
+  }
+  if (typeof value === 'string') {
+    const parsed = Date.parse(value)
+    return Number.isFinite(parsed) ? Math.floor(parsed / 1000) : undefined
+  }
+  return undefined
+}
+
+function hash256(value: unknown): string | undefined {
+  return typeof value === 'string' && /^[0-9a-f]{64}$/i.test(value) ? value.toLowerCase() : undefined
+}
+
+function consentScopeBits(receipt: Record<string, unknown>): number {
+  const numeric = Number(receipt.scope_bits ?? receipt.scopes)
+  if (Number.isSafeInteger(numeric) && numeric >= 0) {
+    return numeric
+  }
+  const scopes = receipt.scopes
+  if (!Array.isArray(scopes)) {
+    return 0
+  }
+  return scopes.reduce((bits, scope) => {
+    if (scope === 'training') {
+      return bits | AI_DATA_SCOPE_TRAINING
+    }
+    if (scope === 'prompt') {
+      return bits | AI_DATA_SCOPE_PROMPT
+    }
+    if (scope === 'response') {
+      return bits | AI_DATA_SCOPE_RESPONSE
+    }
+    return bits
+  }, 0)
+}
+
+export function parseActiveDataConsent(
+  record: Record<string, unknown>,
+  asOfEpochSec = Math.floor(Date.now() / 1000),
+): AiDataConsentReceipt | undefined {
+  const candidate = record.consent_receipt ?? record.data_consent
+  if (!isPlainObject(candidate)) {
+    return undefined
+  }
+  const status = unknownRecordString(candidate, 'status')
+  if (unknownRecordBoolean(candidate, 'active') !== true || (status && status !== 'active')) {
+    return undefined
+  }
+  if (candidate.revoked_at && epochSeconds(candidate.revoked_at)) {
+    return undefined
+  }
+  const campaignId = positiveInteger(candidate.campaign_id)
+  const programId = positiveInteger(candidate.program_id)
+  const consentVersion = positiveInteger(candidate.consent_version ?? candidate.version)
+  const policyHash = hash256(candidate.policy_hash)
+  const receiptHash = hash256(candidate.receipt_hash)
+  const expiresAt = epochSeconds(candidate.expires_at)
+  const scopeBits = consentScopeBits(candidate)
+  if (!campaignId || !programId || !consentVersion || !policyHash || !receiptHash || !expiresAt) {
+    return undefined
+  }
+  if (expiresAt <= asOfEpochSec) {
+    return undefined
+  }
+  if ((scopeBits & AI_DATA_REQUIRED_SCOPES) !== AI_DATA_REQUIRED_SCOPES) {
+    return undefined
+  }
+  return {
+    campaign_id: campaignId,
+    program_id: programId,
+    consent_version: consentVersion,
+    scope_bits: scopeBits,
+    policy_hash: policyHash,
+    receipt_hash: receiptHash,
+    expires_at: expiresAt,
+  }
+}
+
+function passedPrivacyReview(record: Record<string, unknown>): boolean {
+  const review = record.privacy_review ?? record.privacy
+  if (!isPlainObject(review)) {
+    return false
+  }
+  const status = unknownRecordString(review, 'status')
+  const filtered = unknownRecordBoolean(review, 'pii_filtered')
+  const reportHash = hash256(review.report_hash ?? review.redaction_hash)
+  return (status === 'passed' || filtered === true) && Boolean(reportHash)
+}
+
+function privacyReviewHash(record: Record<string, unknown>): string | undefined {
+  const review = record.privacy_review ?? record.privacy
+  return isPlainObject(review) ? hash256(review.report_hash ?? review.redaction_hash) : undefined
+}
+
 function traceMatchesPackFilters(record: Record<string, unknown>, options: QueryDatasetPackOptions, skipped: Record<string, number>): boolean {
   if (!options.include_all && unknownRecordBoolean(record, 'training_candidate') !== true) {
     incrementSkipped(skipped, 'not_training_candidate')
@@ -435,11 +556,16 @@ function traceMatchesPackFilters(record: Record<string, unknown>, options: Query
 export function buildQueryDatasetFromTraces(lines: string[], options: QueryDatasetPackOptions = {}): QueryDatasetPack {
   const minUsefulBps = Number(options.min_useful_bps ?? 8500)
   const maxExamples = Number(options.max_examples ?? 0)
+  const asOfEpochSec = Number(options.as_of_epoch_sec ?? Math.floor(Date.now() / 1000))
   const examples: QueryDatasetExample[] = []
   const skipped: Record<string, number> = {}
   const promptHashes: string[] = []
   const traceHashes: string[] = []
   const exampleHashes: string[] = []
+  const campaignIds: number[] = []
+  const consentPolicyHashes: string[] = []
+  const consentReceiptHashes: string[] = []
+  const seenExamples = new Set<string>()
 
   for (const line of lines) {
     if (maxExamples > 0 && examples.length >= maxExamples) {
@@ -463,6 +589,16 @@ export function buildQueryDatasetFromTraces(lines: string[], options: QueryDatas
       continue
     }
     if (!traceMatchesPackFilters(record, options, skipped)) {
+      continue
+    }
+
+    const consent = parseActiveDataConsent(record, asOfEpochSec)
+    if (!consent) {
+      incrementSkipped(skipped, 'missing_or_inactive_consent')
+      continue
+    }
+    if (!passedPrivacyReview(record)) {
+      incrementSkipped(skipped, 'privacy_review_required')
       continue
     }
 
@@ -494,7 +630,7 @@ export function buildQueryDatasetFromTraces(lines: string[], options: QueryDatas
       }
     }
 
-    const promptHash = unknownRecordString(record, 'prompt_hash') ?? sha256Bytes(Buffer.from(prompt))
+    const promptHash = hash256(record.prompt_hash) ?? sha256Bytes(Buffer.from(prompt))
     const traceHash = sha256Bytes(Buffer.from(trimmed))
     const metadata: Record<string, unknown> = {
       source: 'harbor-ai-query-traces',
@@ -504,12 +640,19 @@ export function buildQueryDatasetFromTraces(lines: string[], options: QueryDatas
       prompt_hash: promptHash,
       model_id: traceModelId(record),
       task: unknownRecordString(record, 'task'),
-      user: unknownRecordString(record, 'user'),
       router_confidence_bps: unknownRecordNumber(record, 'router_confidence_bps'),
       expert_disagreement_bps: unknownRecordNumber(record, 'expert_disagreement_bps'),
       trusted_ai_score_bps: nestedNumber(record, 'trusted_ai', 'score_bps'),
       feedback_score_bps: unknownRecordNumber(record, 'feedback_score_bps'),
       target_source: corrected ? 'correction' : accepted ? 'accepted_output' : 'captured_output',
+      campaign_id: consent.campaign_id,
+      program_id: consent.program_id,
+      consent_version: consent.consent_version,
+      consent_scope_bits: consent.scope_bits,
+      consent_policy_hash: consent.policy_hash,
+      consent_receipt_hash: consent.receipt_hash,
+      consent_expires_at: consent.expires_at,
+      privacy_review_hash: privacyReviewHash(record),
     }
     const rejected = corrected ? firstText(record, ['rejected_output', 'output']) : firstText(record, ['rejected_output'])
     const example: QueryDatasetExample = {
@@ -520,10 +663,20 @@ export function buildQueryDatasetFromTraces(lines: string[], options: QueryDatas
       metadata,
       rejected_completion: rejected && rejected !== completion ? rejected : undefined,
     }
+    const dedupeHash = jsonLineHash({messages: example.messages, rejected_completion: example.rejected_completion})
+    if (seenExamples.has(dedupeHash)) {
+      incrementSkipped(skipped, 'duplicate_example')
+      continue
+    }
+    seenExamples.add(dedupeHash)
+    const exampleHash = jsonLineHash(example)
     examples.push(example)
     promptHashes.push(promptHash)
     traceHashes.push(traceHash)
-    exampleHashes.push(jsonLineHash(example))
+    exampleHashes.push(exampleHash)
+    campaignIds.push(consent.campaign_id)
+    consentPolicyHashes.push(consent.policy_hash)
+    consentReceiptHashes.push(consent.receipt_hash)
   }
 
   const datasetJsonl = examples.map((example) => canonicalJson(example)).join('')
@@ -534,7 +687,7 @@ export function buildQueryDatasetFromTraces(lines: string[], options: QueryDatas
     fusion_parent_model_id: options.fusion_parent_model_id ?? options.base_model_id,
   } : undefined
   const manifest: QueryDatasetManifest = {
-    format: 'harbor.ai.query-dataset.v1',
+    format: 'harbor.ai.query-dataset.v2',
     dataset_format: 'chat_messages_jsonl',
     dataset_hash: datasetHash,
     source: 'harbor-ai-query-traces',
@@ -548,6 +701,9 @@ export function buildQueryDatasetFromTraces(lines: string[], options: QueryDatas
     example_hashes: exampleHashes,
     prompt_hashes: [...new Set(promptHashes)],
     trace_hashes: traceHashes,
+    campaign_ids: [...new Set(campaignIds)].sort((left, right) => left - right),
+    consent_policy_hashes: [...new Set(consentPolicyHashes)].sort(),
+    consent_receipt_hashes: [...new Set(consentReceiptHashes)].sort(),
     quality_policy: {
       require_training_candidate: !options.include_all,
       min_useful_bps: minUsefulBps,
@@ -556,9 +712,15 @@ export function buildQueryDatasetFromTraces(lines: string[], options: QueryDatas
       supervised_targets_always_allowed: true,
     },
     privacy_policy: {
-      requires_unredacted_prompt: true,
+      requires_active_versioned_consent: true,
+      required_scopes: ['training', 'prompt', 'response'],
+      requires_pii_review: true,
+      excludes_direct_user_identifiers_from_manifest: true,
+      requires_privacy_reviewed_prompt: true,
       stores_raw_prompts: true,
       stores_raw_completions: true,
+      encrypted_at_rest_required: true,
+      prospective_revocation: true,
       source_traces_remain_edge_local: true,
     },
     training_metadata: trainingMetadata,
@@ -1730,16 +1892,49 @@ async function readTraceLines(input: string, allTraces?: boolean): Promise<{trac
   return {trace_file: traceFile, lines: raw.split(/\r?\n/)}
 }
 
+export function validateQueryDatasetManifest(parsed: unknown, label = 'manifest'): QueryDatasetManifest {
+  if (!isPlainObject(parsed) || parsed.format !== 'harbor.ai.query-dataset.v2') {
+    throw new Error(`not a Harbor query dataset manifest: ${label}`)
+  }
+  const hashArray = (value: unknown): value is string[] =>
+    Array.isArray(value) && value.length > 0 && value.every((entry) => Boolean(hash256(entry)))
+  const campaignIds = parsed.campaign_ids
+  const privacy = parsed.privacy_policy
+  const scopes = isPlainObject(privacy) ? privacy.required_scopes : undefined
+  if (
+    !hash256(parsed.dataset_hash) ||
+    parsed.dataset_format !== 'chat_messages_jsonl' ||
+    parsed.source !== 'harbor-ai-query-traces' ||
+    !positiveInteger(parsed.example_count) ||
+    !hashArray(parsed.example_hashes) ||
+    parsed.example_hashes.length !== Number(parsed.example_count) ||
+    !hashArray(parsed.trace_hashes) ||
+    parsed.trace_hashes.length !== Number(parsed.example_count) ||
+    !hashArray(parsed.prompt_hashes) ||
+    !Array.isArray(campaignIds) ||
+    campaignIds.length === 0 ||
+    !campaignIds.every((entry) => Boolean(positiveInteger(entry))) ||
+    !hashArray(parsed.consent_policy_hashes) ||
+    !hashArray(parsed.consent_receipt_hashes) ||
+    !isPlainObject(privacy) ||
+    privacy.requires_active_versioned_consent !== true ||
+    privacy.requires_pii_review !== true ||
+    privacy.encrypted_at_rest_required !== true ||
+    !Array.isArray(scopes) ||
+    !['training', 'prompt', 'response'].every((scope) => scopes.includes(scope))
+  ) {
+    throw new Error(`incomplete consent-aware query dataset manifest: ${label}`)
+  }
+  return parsed as unknown as QueryDatasetManifest
+}
+
 async function readQueryDatasetManifest(file?: string): Promise<QueryDatasetManifest | undefined> {
   if (!file) {
     return undefined
   }
   const raw = await fs.readFile(path.resolve(file), 'utf8')
   const parsed = JSON.parse(raw) as unknown
-  if (!isPlainObject(parsed) || parsed.format !== 'harbor.ai.query-dataset.v1') {
-    throw new Error(`not a Harbor query dataset manifest: ${file}`)
-  }
-  return parsed as unknown as QueryDatasetManifest
+  return validateQueryDatasetManifest(parsed, file)
 }
 
 function queryDatasetArtifactMetadata(input: {
@@ -1750,7 +1945,7 @@ function queryDatasetArtifactMetadata(input: {
 }): Record<string, unknown> {
   return {
     kind: 'dataset',
-    format: 'harbor.ai.query-dataset.v1',
+    format: 'harbor.ai.query-dataset.v2',
     dataset_format: 'chat_messages_jsonl',
     dataset_hash: input.datasetHash,
     manifest_hash: input.manifestHash,
@@ -1760,6 +1955,10 @@ function queryDatasetArtifactMetadata(input: {
     base_model_id: input.manifest?.base_model_id,
     expert_role: input.manifest?.expert_role,
     fusion_parent_model_id: input.manifest?.fusion_parent_model_id,
+    campaign_ids: input.manifest?.campaign_ids,
+    consent_policy_hashes: input.manifest?.consent_policy_hashes,
+    consent_receipt_count: input.manifest?.consent_receipt_hashes?.length,
+    encrypted_at_rest_required: true,
     ...input.metadata,
   }
 }
@@ -1859,6 +2058,7 @@ function addDataCommand(ai: Command): void {
       .option('--market-contract <account>', 'service market contract account', MARKET_CONTRACT)
       .option('--storage-contract <account>', 'storage registry contract account', process.env.HARBOR_STORAGE_CONTRACT ?? 'harborstore')
       .option('--router-url <url>', 'explicit storage router endpoint for Harbor-backed storage')
+      .option('--private-key <key>', 'local dataset encryption key (or HARBOR_AI_DATA_KEY)')
       .option('--walrus-command <path>', 'Walrus CLI command', process.env.WALRUS_CLI ?? 'walrus')
       .option('--walrus-publisher-url <url>', 'Walrus publisher URL')
       .option('--walrus-aggregator-url <url>', 'Walrus aggregator URL to preserve in metadata')
@@ -1872,6 +2072,7 @@ function addDataCommand(ai: Command): void {
     marketContract?: string
     storageContract?: string
     routerUrl?: string
+    privateKey?: string
     walrusCommand?: string
     walrusPublisherUrl?: string
     walrusAggregatorUrl?: string
@@ -1890,6 +2091,9 @@ function addDataCommand(ai: Command): void {
     const datasetBytes = await fs.readFile(file)
     const datasetHash = sha256Bytes(datasetBytes)
     const manifest = await readQueryDatasetManifest(options.manifest)
+    if (!manifest) {
+      throw new Error('a consent-aware harbor.ai.query-dataset.v2 manifest is required')
+    }
     if (manifest && manifest.dataset_hash !== datasetHash) {
       throw new Error(`dataset hash mismatch: manifest has ${manifest.dataset_hash}, file has ${datasetHash}`)
     }
@@ -1901,6 +2105,10 @@ function addDataCommand(ai: Command): void {
       metadata: options.metadata ? parseObjectJson(options.metadata, 'metadata') : undefined,
     })
     const storageMetadata = JSON.stringify(artifactMetadata)
+    const privateKey = options.privateKey ?? process.env.HARBOR_AI_DATA_KEY
+    if (!options.dryRun && !privateKey) {
+      throw new Error('consented AI datasets must be encrypted; pass --private-key or set HARBOR_AI_DATA_KEY')
+    }
     const plannedAction = {
       contract,
       action: 'addartifact',
@@ -1920,6 +2128,7 @@ function addDataCommand(ai: Command): void {
         dataset_file: file,
         dataset_hash: datasetHash,
         manifest_hash: manifestHash,
+        encrypted: true,
         artifact_metadata: artifactMetadata,
         actions: [plannedAction],
       }, options.json)
@@ -1935,6 +2144,8 @@ function addDataCommand(ai: Command): void {
         file,
         owner,
         metadata: storageMetadata,
+        encrypt: true,
+        privateKey,
         contentFormat: 'application/x-ndjson',
       })
       : await putReplicatedObject({
@@ -1942,6 +2153,8 @@ function addDataCommand(ai: Command): void {
         file,
         owner,
         metadata: storageMetadata,
+        encrypt: true,
+        privateKey,
       })
     const actorOptions = {...options, actor: options.actor ?? owner}
     const artifactTx = await pushAction({
@@ -2002,7 +2215,7 @@ function addDataCommand(ai: Command): void {
     const contract = options.contract ?? AI_CONTRACT
     const metadata = {
       source: 'harbor-ai-query-data',
-      format: 'harbor.ai.query-dataset.v1',
+      format: 'harbor.ai.query-dataset.v2',
       manifest_hash: options.manifestHash,
       ...(options.metadata ? parseObjectJson(options.metadata, 'metadata') : {}),
     }
@@ -2442,9 +2655,23 @@ export function createAiCommand(): Command {
       'svcmarket_contract',
       ['max_title_size', 'number'],
       ['max_metadata_size', 'number'],
-      ['tune_quorum_bps', 'number'],
       ['tune_threshold_bps', 'number'],
+      ['tune_quorum_bps', 'number'],
       ['min_train_scores', 'number'],
+    ],
+  })
+  addAiAction(ai, {
+    command: 'configure-selection',
+    action: 'setaiparams',
+    fields: [
+      ['max_candidates', 'number'],
+      ['max_ranked_choices', 'number'],
+      ['min_qualification_reviews', 'number'],
+      ['min_bakeoff_scores', 'number'],
+      ['community_quorum_bps', 'number'],
+      ['max_voice_weight', 'number'],
+      ['voice_epoch_sec', 'number'],
+      ['runoff_sec', 'number'],
     ],
   })
   addAiAction(ai, {command: 'claim', action: 'claim', fields: ['owner', 'quantity'], signerField: 'owner'})
@@ -2466,10 +2693,73 @@ export function createAiCommand(): Command {
       signerField: 'owner',
     },
     {
+      command: 'register-remote',
+      action: 'regremote',
+      fields: [
+        'owner', ['model_type', 'number'], ['parent_model_id', 'number'],
+        ['manifest_artifact_id', 'number'], 'revision_hash', ['terms_artifact_id', 'number'],
+        ['output_distillation_allowed', 'boolean'], ['requires_session_affinity', 'boolean'],
+        ['preserve_thinking_history', 'boolean'], ['eval_artifact_id', 'number'],
+        'api_model_id', 'title', 'metadata',
+      ],
+      signerField: 'owner',
+    },
+    {
       command: 'set',
       action: 'setmodel',
-      fields: ['owner', ['model_id', 'number'], ['status', 'number'], 'metadata'],
+      fields: ['owner', ['model_id', 'number'], ['weights_artifact_id', 'number'], ['eval_artifact_id', 'number'], ['status', 'number'], 'title', 'metadata'],
       signerField: 'owner',
+    },
+  ]))
+
+  ai.addCommand(group('program', 'Manage specialized model programs and exact model specifications', [
+    {
+      command: 'add',
+      action: 'addprogram',
+      fields: ['owner', ['current_model_id', 'number'], ['current_compute_class', 'number'], ['eval_artifact_id', 'number'], 'title', 'metadata'],
+      signerField: 'owner',
+    },
+    {
+      command: 'set-model-spec',
+      action: 'setmodelspec',
+      fields: [
+        'owner', ['model_id', 'number'], ['program_id', 'number'], 'revision_hash',
+        ['license_artifact_id', 'number'], ['compute_class', 'number'], ['total_params_m', 'number'],
+        ['active_params_m', 'number'], ['context_tokens', 'number'], ['required_vram_mb', 'number'],
+        ['training_methods', 'number'], 'metadata',
+      ],
+      signerField: 'owner',
+    },
+  ]))
+
+  ai.addCommand(group('provider', 'Subscribe AI providers and publish model deployment offers', [
+    {
+      command: 'subscribe',
+      action: 'subscribe',
+      fields: ['provider', ['program_id', 'number'], ['roles', 'number'], ['max_compute_class', 'number'], ['capacity_units', 'number'], 'bond', ['expires_sec', 'number'], 'metadata'],
+      signerField: 'provider',
+    },
+    {command: 'unsubscribe', action: 'unsub', fields: ['provider', ['subscription_id', 'number']], signerField: 'provider'},
+    {
+      command: 'deploy',
+      action: 'setdeploy',
+      fields: [
+        'provider', ['deployment_id', 'number'], ['model_id', 'number'], ['program_id', 'number'], ['active', 'boolean'],
+        'input_price_million', 'output_price_million', 'min_fee', ['capacity_tokens_min', 'number'],
+        ['p95_latency_ms', 'number'], 'metadata',
+      ],
+      signerField: 'provider',
+    },
+    {
+      command: 'configure-deployment',
+      action: 'setdepcfg',
+      fields: [
+        'provider', ['deployment_id', 'number'], ['execution_mode', 'number'],
+        ['source_model_id', 'number'], ['topology_artifact_id', 'number'], ['node_count', 'number'],
+        ['aggregate_memory_mb', 'number'], ['min_node_memory_mb', 'number'], ['interconnect', 'number'],
+        'sharding_hash', 'runtime_hash', ['validated_context_tokens', 'number'], 'metadata',
+      ],
+      signerField: 'provider',
     },
   ]))
 
@@ -2506,6 +2796,65 @@ export function createAiCommand(): Command {
   addTuneAutoVoteCommand(tune)
   ai.addCommand(tune)
 
+  ai.addCommand(group('promotion', 'Select and launch larger specialist model tiers', [
+    {
+      command: 'open',
+      action: 'openround',
+      fields: [
+        'proposer', ['program_id', 'number'], ['target_compute_class', 'number'], 'min_demand',
+        'training_budget', ['min_training_providers', 'number'], ['min_inference_providers', 'number'],
+        ['min_quality_bps', 'number'], ['min_safety_bps', 'number'], ['nomination_sec', 'number'],
+        ['voting_sec', 'number'], 'metadata',
+      ],
+      signerField: 'proposer',
+    },
+    {
+      command: 'nominate',
+      action: 'nominate',
+      fields: [
+        'proposer', ['round_id', 'number'], ['base_model_id', 'number'], ['dataset_artifact_id', 'number'],
+        ['eval_artifact_id', 'number'], 'estimated_training_cost', 'estimated_input_price_million',
+        'estimated_output_price_million', 'title', 'metadata',
+      ],
+      signerField: 'proposer',
+    },
+    {
+      command: 'qualify',
+      action: 'qualify',
+      fields: ['validator', ['candidate_id', 'number'], ['approve', 'boolean'], ['license_ok', 'boolean'], ['reproducible', 'boolean'], ['serving_ok', 'boolean'], 'report_hash'],
+      signerField: 'validator',
+    },
+    {
+      command: 'score-bakeoff',
+      action: 'scorebake',
+      fields: ['validator', ['candidate_id', 'number'], ['quality_bps', 'number'], ['blind_preference_bps', 'number'], ['safety_bps', 'number'], ['cost_efficiency_bps', 'number'], ['transfer_bps', 'number'], 'report_hash'],
+      signerField: 'validator',
+    },
+    {
+      command: 'commit-provider',
+      action: 'commitcand',
+      fields: ['provider', ['candidate_id', 'number'], ['roles', 'number'], ['capacity_units', 'number'], 'quoted_cost', 'metadata'],
+      signerField: 'provider',
+    },
+    {command: 'pledge-demand', action: 'pledgedemand', fields: ['supporter', ['candidate_id', 'number'], 'quantity'], signerField: 'supporter'},
+    {command: 'start-vote', action: 'startround', fields: [['round_id', 'number']]},
+    {command: 'vote-user', action: 'voteuser', fields: ['voter', ['round_id', 'number'], ['rankings', 'json']], signerField: 'voter'},
+    {command: 'vote-community', action: 'votecomm', fields: ['voter', ['round_id', 'number'], ['rankings', 'json'], 'quantity'], signerField: 'voter'},
+    {command: 'close', action: 'closeround', fields: [['round_id', 'number']]},
+    {command: 'settle-demand', action: 'settledem', fields: ['supporter', ['round_id', 'number']], signerField: 'supporter'},
+    {command: 'reclaim-vote', action: 'reclaimvote', fields: ['voter', ['round_id', 'number']], signerField: 'voter'},
+    {command: 'claim-round', action: 'claimround', fields: ['proposer', ['round_id', 'number']], signerField: 'proposer'},
+    {
+      command: 'add-milestone',
+      action: 'addmile',
+      fields: ['proposer', ['candidate_id', 'number'], 'payee', 'amount', 'title', 'metadata'],
+      signerField: 'proposer',
+    },
+    {command: 'approve-milestone', action: 'approvemile', fields: ['validator', ['milestone_id', 'number'], 'report_hash'], signerField: 'validator'},
+    {command: 'release-milestone', action: 'releasemile', fields: [['milestone_id', 'number'], 'evidence_hash']},
+    {command: 'start-training', action: 'startpromo', fields: ['creator', ['round_id', 'number'], ['max_submissions', 'number'], 'metadata', ['expires_sec', 'number']], signerField: 'creator'},
+  ]))
+
   ai.addCommand(group('train', 'Run Harbor AI training job lifecycle actions', [
     {
       command: 'start',
@@ -2528,6 +2877,51 @@ export function createAiCommand(): Command {
     {command: 'settle', action: 'settletrain', fields: [['train_id', 'number']]},
   ]))
 
+  ai.addCommand(group('distill', 'Run consented, batched specialist distillation campaigns', [
+    {
+      command: 'open',
+      action: 'opendistill',
+      fields: [
+        'owner', ['program_id', 'number'], ['tune_id', 'number'], ['teacher_model_id', 'number'],
+        ['required_scopes', 'number'], ['discount_bps', 'number'], 'max_discount_per_infer',
+        'discount_fund', ['min_batch_samples', 'number'], ['max_batch_samples', 'number'],
+        ['min_quality_bps', 'number'], ['min_safety_bps', 'number'], ['min_transfer_bps', 'number'],
+        ['min_canary_requests', 'number'], ['min_canary_success_bps', 'number'],
+        'title', 'metadata',
+      ],
+      signerField: 'owner',
+    },
+    {command: 'fund', action: 'funddistill', fields: ['payer', ['campaign_id', 'number'], 'quantity'], signerField: 'payer'},
+    {command: 'close', action: 'closedistill', fields: ['owner', ['campaign_id', 'number']], signerField: 'owner'},
+    {command: 'claim', action: 'claimdistill', fields: ['owner', ['campaign_id', 'number'], 'quantity'], signerField: 'owner'},
+    {command: 'consent', action: 'setconsent', fields: ['user', ['campaign_id', 'number'], ['scopes', 'number'], ['expires_sec', 'number']], signerField: 'user'},
+    {command: 'revoke-consent', action: 'revokecons', fields: ['user', ['program_id', 'number']], signerField: 'user'},
+    {command: 'opt-in', action: 'optindata', fields: ['user', ['infer_id', 'number'], ['campaign_id', 'number']], signerField: 'user'},
+    {command: 'open-batch', action: 'openbatch', fields: ['owner', ['campaign_id', 'number'], 'curator', 'metadata'], signerField: 'owner'},
+    {command: 'add-sample', action: 'addsample', fields: ['curator', ['batch_id', 'number'], ['infer_id', 'number'], 'evidence_hash'], signerField: 'curator'},
+    {command: 'cancel-batch', action: 'cancelbatch', fields: ['actor', ['batch_id', 'number']], signerField: 'actor'},
+    {command: 'seal-batch', action: 'sealbatch', fields: ['curator', ['batch_id', 'number'], ['dataset_artifact_id', 'number']], signerField: 'curator'},
+    {
+      command: 'start-batch',
+      action: 'startdistill',
+      fields: ['creator', ['batch_id', 'number'], 'reward', ['max_submissions', 'number'], 'metadata', ['expires_sec', 'number']],
+      signerField: 'creator',
+    },
+    {
+      command: 'score-batch',
+      action: 'scorebatch',
+      fields: ['validator', ['batch_id', 'number'], ['quality_bps', 'number'], ['safety_bps', 'number'], ['transfer_bps', 'number'], 'report_hash'],
+      signerField: 'validator',
+    },
+    {
+      command: 'report-canary',
+      action: 'reportcanary',
+      fields: ['router', ['batch_id', 'number'], ['request_count', 'number'], ['success_count', 'number'], 'evidence_hash'],
+      signerField: 'router',
+    },
+    {command: 'promote-batch', action: 'promotebatch', fields: ['owner', ['batch_id', 'number']], signerField: 'owner'},
+  ]))
+
   ai.addCommand(group('infer', 'Request and settle Harbor AI inference jobs', [
     {
       command: 'request',
@@ -2545,7 +2939,44 @@ export function createAiCommand(): Command {
     {command: 'cancel', action: 'canceljob', fields: ['requester', ['infer_id', 'number']], signerField: 'requester'},
   ]))
 
+  ai.addCommand(group('session', 'Create session-affine routed inference for preserved model history', [
+    {
+      command: 'open',
+      action: 'opensess',
+      fields: ['requester', ['program_id', 'number'], ['preserve_thinking_history', 'boolean'], ['expires_sec', 'number'], 'metadata'],
+      signerField: 'requester',
+    },
+    {command: 'close', action: 'closesess', fields: ['requester', ['session_id', 'number']], signerField: 'requester'},
+    {
+      command: 'request',
+      action: 'reqsession',
+      fields: [
+        'requester', ['session_id', 'number'], ['min_compute_class', 'number'], ['max_compute_class', 'number'],
+        ['routing_policy', 'number'], 'prompt_hash', ['max_input_tokens', 'number'], ['max_output_tokens', 'number'],
+        'max_fee', ['max_latency_ms', 'number'], ['allow_escalation', 'boolean'], 'metadata',
+      ],
+      signerField: 'requester',
+    },
+  ]))
+
   ai.addCommand(group('route', 'Configure and audit AI routing decisions', [
+    {
+      command: 'request',
+      action: 'reqroute',
+      fields: [
+        'requester', ['program_id', 'number'], ['min_compute_class', 'number'], ['max_compute_class', 'number'],
+        ['routing_policy', 'number'], 'prompt_hash', ['max_input_tokens', 'number'], ['max_output_tokens', 'number'],
+        'max_fee', ['max_latency_ms', 'number'], ['allow_escalation', 'boolean'], 'metadata',
+      ],
+      signerField: 'requester',
+    },
+    {
+      command: 'quote',
+      action: 'quoteinfer',
+      fields: ['router', ['infer_id', 'number'], ['deployment_id', 'number'], 'max_fee', ['expires_sec', 'number'], 'reason_hash', 'metadata'],
+      signerField: 'router',
+    },
+    {command: 'assign', action: 'assigninfer', fields: ['router', ['infer_id', 'number'], ['quote_id', 'number']], signerField: 'router'},
     {
       command: 'policy',
       action: 'setroutepol',

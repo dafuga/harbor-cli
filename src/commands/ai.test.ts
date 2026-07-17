@@ -18,6 +18,7 @@ import {
   parseFusionExpertSpec,
   renderAegisConfig,
   runTrustedAiAdapter,
+  validateQueryDatasetManifest,
 } from './ai.js'
 
 test('buildTuneNeeds groups low-confidence route logs into tune request templates', () => {
@@ -152,6 +153,33 @@ test('ai train start exposes the starttrain max_submissions argument', () => {
   ])
 })
 
+test('ai exposes remote model, deployment topology, session, and canary arguments in ABI order', () => {
+  const ai = createAiCommand()
+  const args = (group: string, command: string) => ai.commands
+    .find((candidate) => candidate.name() === group)?.commands
+    .find((candidate) => candidate.name() === command)?.registeredArguments
+    .map((argument) => argument.name())
+
+  assert.deepEqual(args('model', 'register-remote'), [
+    'owner', 'model_type', 'parent_model_id', 'manifest_artifact_id', 'revision_hash',
+    'terms_artifact_id', 'output_distillation_allowed', 'requires_session_affinity',
+    'preserve_thinking_history', 'eval_artifact_id', 'api_model_id', 'title', 'metadata',
+  ])
+  assert.deepEqual(args('provider', 'configure-deployment'), [
+    'provider', 'deployment_id', 'execution_mode', 'source_model_id',
+    'topology_artifact_id', 'node_count', 'aggregate_memory_mb', 'min_node_memory_mb',
+    'interconnect', 'sharding_hash', 'runtime_hash', 'validated_context_tokens', 'metadata',
+  ])
+  assert.deepEqual(args('session', 'request'), [
+    'requester', 'session_id', 'min_compute_class', 'max_compute_class', 'routing_policy',
+    'prompt_hash', 'max_input_tokens', 'max_output_tokens', 'max_fee', 'max_latency_ms',
+    'allow_escalation', 'metadata',
+  ])
+  assert.deepEqual(args('distill', 'report-canary'), [
+    'router', 'batch_id', 'request_count', 'success_count', 'evidence_hash',
+  ])
+})
+
 test('fusion manifest canonicalization is stable and metadata-first', () => {
   const manifest = buildFusionManifest({
     base_model_id: 1,
@@ -267,6 +295,18 @@ test('distributed aggregate manifest canonicalizes shard artifact specs', () => 
 })
 
 test('query trace dataset pack keeps corrections and filters weak raw outputs', () => {
+  const consentReceipt = {
+    active: true,
+    status: 'active',
+    campaign_id: 7,
+    program_id: 3,
+    consent_version: 2,
+    scope_bits: 7,
+    policy_hash: 'c'.repeat(64),
+    receipt_hash: 'd'.repeat(64),
+    expires_at: 2_000_000_000,
+  }
+  const privacyReview = {status: 'passed', pii_filtered: true, report_hash: 'e'.repeat(64)}
   const lines = [
     JSON.stringify({
       format: 'harbor.ai.trace.v1',
@@ -280,6 +320,8 @@ test('query trace dataset pack keeps corrections and filters weak raw outputs', 
       task: 'fusion-training',
       user: 'alice',
       feedback_score_bps: 9600,
+      consent_receipt: consentReceipt,
+      privacy_review: privacyReview,
     }),
     JSON.stringify({
       format: 'harbor.ai.trace.v1',
@@ -291,6 +333,8 @@ test('query trace dataset pack keeps corrections and filters weak raw outputs', 
       model_id: 1,
       task: 'fusion-training',
       trusted_ai: {score_bps: 9100},
+      consent_receipt: consentReceipt,
+      privacy_review: privacyReview,
     }),
     JSON.stringify({
       format: 'harbor.ai.trace.v1',
@@ -302,6 +346,29 @@ test('query trace dataset pack keeps corrections and filters weak raw outputs', 
       model_id: 1,
       task: 'fusion-training',
       trusted_ai: {score_bps: 4200},
+      consent_receipt: consentReceipt,
+      privacy_review: privacyReview,
+    }),
+    JSON.stringify({
+      format: 'harbor.ai.trace.v1',
+      kind: 'user_feedback',
+      training_candidate: true,
+      prompt: 'This record has no consent.',
+      accepted_output: 'It must not enter the dataset.',
+      model_id: 1,
+      task: 'fusion-training',
+    }),
+    JSON.stringify({
+      format: 'harbor.ai.trace.v1',
+      kind: 'routed_inference',
+      training_candidate: true,
+      prompt: 'What is a good answer?',
+      output: '{"text":"A concise, verified answer."}',
+      model_id: 1,
+      task: 'fusion-training',
+      trusted_ai: {score_bps: 9100},
+      consent_receipt: {...consentReceipt, receipt_hash: 'f'.repeat(64)},
+      privacy_review: privacyReview,
     }),
   ]
 
@@ -311,19 +378,31 @@ test('query trace dataset pack keeps corrections and filters weak raw outputs', 
     base_model_id: 1,
     expert_role: 'planner',
     min_useful_bps: 8500,
+    as_of_epoch_sec: 1_900_000_000,
   })
 
   assert.equal(pack.examples.length, 2)
   assert.equal(pack.skipped.low_score_output, 1)
-  assert.equal(pack.manifest.format, 'harbor.ai.query-dataset.v1')
+  assert.equal(pack.skipped.missing_or_inactive_consent, 1)
+  assert.equal(pack.skipped.duplicate_example, 1)
+  assert.equal(pack.manifest.format, 'harbor.ai.query-dataset.v2')
   assert.equal(pack.manifest.example_count, 2)
   assert.equal(pack.manifest.training_metadata?.expert_role, 'planner')
+  assert.deepEqual(pack.manifest.campaign_ids, [7])
+  assert.deepEqual(pack.manifest.consent_policy_hashes, ['c'.repeat(64)])
+  assert.equal(pack.examples[0].metadata.consent_receipt_hash, 'd'.repeat(64))
+  assert.equal(pack.examples[0].metadata.user, undefined)
   assert.equal(pack.examples[0].messages[1].content, 'Split each expert into independent LoRA shards and average compatible adapters.')
   assert.equal(pack.examples[0].rejected_completion, 'Train one giant model.')
   assert.equal(pack.examples[1].messages[1].content, 'A concise, verified answer.')
   assert.match(pack.dataset_jsonl, /"messages"/)
   assert.equal(pack.dataset_hash.length, 64)
   assert.equal(pack.manifest_hash.length, 64)
+  assert.equal(validateQueryDatasetManifest(pack.manifest).dataset_hash, pack.manifest.dataset_hash)
+  assert.throws(
+    () => validateQueryDatasetManifest({...pack.manifest, consent_receipt_hashes: []}),
+    /incomplete consent-aware query dataset manifest/,
+  )
 })
 
 test('runTrustedAiAdapter command passes a JSON payload file path', async () => {
