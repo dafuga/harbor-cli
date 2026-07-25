@@ -27,11 +27,13 @@
     "@wharfkit/wallet-plugin-privatekey": "^1.1.0",
     "commander": "^12.1.0",
     "pako": "^2.1.0",
-    "qrcode-terminal": "^0.12.0"
+    "qrcode-terminal": "^0.12.0",
+    "sodium-native": "^5.1.0"
   },
   "devDependencies": {
     "@types/node": "^20.12.12",
     "@types/pako": "^2.0.4",
+    "@types/sodium-native": "^2.3.9",
     "typescript": "^5.4.5"
   }
 }

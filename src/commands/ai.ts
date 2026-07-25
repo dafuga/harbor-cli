@@ -5,11 +5,28 @@ import path from 'node:path'
 import {Command} from 'commander'
 import {addJsonActionCommand, Field} from './action-fields.js'
 import {addTxOptions} from './action.js'
-import {getTableRows, printResult, pushAction, serializeAction, transactActions} from '../lib/tx.js'
-import {putReplicatedObject, putWalrusObject, sha256Bytes} from '../lib/storage.js'
+import {
+  actionUint64Return,
+  canonicalUint64,
+  getAllTableRows,
+  getTableRows,
+  printResult,
+  pushAction,
+  readContractNextId,
+  serializeAction,
+  transactActions,
+} from '../lib/tx.js'
+import {GovernedStorageEncryption, hashFile, putReplicatedObject, putWalrusObject, sha256Bytes} from '../lib/storage.js'
+import {parseVaultPublicKey} from '../lib/vault-crypto.js'
 
 const AI_CONTRACT = process.env.HARBOR_AI_CONTRACT ?? 'harborai'
 const MARKET_CONTRACT = process.env.HARBOR_MARKET_CONTRACT ?? 'svcmarket'
+const DISABLED_INFERENCE_SEED =
+  'deployment registration is not inference work; complete a paid, independently settled inference'
+const DISABLED_DATA_CONTRIBUTION =
+  'legacy data contributions are disabled; use the Vault-backed distillation sample lifecycle'
+const DISABLED_DATA_REWARD =
+  'legacy data rewards are disabled; fund the Vault-backed staged sample reward pool'
 
 const AI_SERVICE_TYPES: Record<string, {id: number; name: string; aliases: string[]}> = {
   inference: {id: 18, name: 'aiinfer', aliases: ['infer', 'aiinfer', 'model-host', 'host']},
@@ -22,6 +39,7 @@ interface AiActionSpec {
   action: string
   fields: Field[]
   signerField?: string
+  disabledReason?: string
 }
 
 function addAiAction(root: Command, spec: AiActionSpec): void {
@@ -79,6 +97,8 @@ export interface RouteLogRow {
   metadata?: string
 }
 
+export type Uint64String = string
+
 export interface SubcallRow {
   id: number | string
   parent_infer_id: number | string
@@ -88,13 +108,13 @@ export interface SubcallRow {
 }
 
 export interface TuneNeed {
-  base_model_id: number
+  base_model_id: Uint64String
   title: string
   route_count: number
   low_confidence_count: number
   subcall_count: number
   avg_confidence_bps: number
-  infer_ids: number[]
+  infer_ids: Uint64String[]
   request_hashes: string[]
   metadata: Record<string, unknown>
   request_template: string
@@ -112,7 +132,7 @@ export interface TuneRequestRow {
 }
 
 export interface TuneAutoVotePlan {
-  tune_id: number
+  tune_id: Uint64String
   approve: boolean
   quantity: string
   reason: string
@@ -146,32 +166,32 @@ export interface AegisConfigOptions {
 export type FusionLogitMode = 'none' | 'top_k' | 'full'
 
 export interface FusionExpertSpec {
-  model_id: number
+  model_id: Uint64String
   role: string
   weight: number
 }
 
 export interface FusionManifestInput {
-  base_model_id: number
+  base_model_id: Uint64String
   experts: FusionExpertSpec[]
   logit_mode?: FusionLogitMode
   logit_top_k?: number
   selection_policy?: Record<string, unknown>
-  eval_artifact_id?: number
+  eval_artifact_id?: Uint64String
   auto_expert_count?: number
 }
 
 export interface FusionManifest {
   format: 'harbor.fusion.v1'
-  base_model_id: number
-  expert_model_ids: number[]
+  base_model_id: Uint64String
+  expert_model_ids: Uint64String[]
   expert_roles: string[]
   expert_weights: number[]
   fusion_strategy: 'routed_expert'
   logit_mode: FusionLogitMode
   logit_top_k: number
   selection_policy: Record<string, unknown>
-  eval_artifact_id: number
+  eval_artifact_id: Uint64String
   auto_expert_count?: number
 }
 
@@ -185,11 +205,11 @@ export interface FusionRegisterPlan {
 }
 
 export interface DistributedExpertPlanInput {
-  base_model_id: number
+  base_model_id: Uint64String
   expert_role: string
   shard_count: number
   participants?: string[]
-  dataset_artifact_id?: number
+  dataset_artifact_id?: Uint64String
   model?: string
   aggregation_group_id?: string
   metadata?: Record<string, unknown>
@@ -204,7 +224,7 @@ export interface DistributedExpertShard {
 
 export interface DistributedExpertPlan {
   format: 'harbor.distributed_expert_plan.v1'
-  base_model_id: number
+  base_model_id: Uint64String
   expert_role: string
   shard_count: number
   aggregation_group_id: string
@@ -215,13 +235,13 @@ export interface DistributedShardArtifactSpec {
   shard_index: number
   weights_hash: string
   weight: number
-  artifact_id?: number
+  artifact_id?: Uint64String
   trainer?: string
 }
 
 export interface DistributedAggregateManifest {
   format: 'harbor.gemma.mlx.aggregate-manifest.v1'
-  base_model_id: number
+  base_model_id: Uint64String
   expert_role: string
   aggregation_group_id: string
   aggregation_strategy: 'weighted_lora_average'
@@ -240,16 +260,16 @@ export interface QueryDatasetManifest {
   dataset_hash: string
   source: 'harbor-ai-query-traces'
   contributor?: string
-  base_model_id?: number
-  model_id?: number
+  base_model_id?: Uint64String
+  model_id?: Uint64String
   expert_role?: string
-  fusion_parent_model_id?: number
+  fusion_parent_model_id?: Uint64String
   task?: string
   example_count: number
   example_hashes: string[]
   prompt_hashes: string[]
   trace_hashes: string[]
-  campaign_ids: number[]
+  campaign_ids: Uint64String[]
   consent_policy_hashes: string[]
   consent_receipt_hashes: string[]
   quality_policy: Record<string, unknown>
@@ -271,10 +291,10 @@ export interface QueryDatasetPackOptions {
   contributor?: string
   task?: string
   user?: string
-  model_id?: number
-  base_model_id?: number
+  model_id?: Uint64String
+  base_model_id?: Uint64String
   expert_role?: string
-  fusion_parent_model_id?: number
+  fusion_parent_model_id?: Uint64String
   min_useful_bps?: number
   include_all?: boolean
   include_low_score?: boolean
@@ -289,8 +309,8 @@ export const AI_DATA_SCOPE_RESPONSE = 4
 export const AI_DATA_REQUIRED_SCOPES = AI_DATA_SCOPE_TRAINING | AI_DATA_SCOPE_PROMPT | AI_DATA_SCOPE_RESPONSE
 
 export interface AiDataConsentReceipt {
-  campaign_id: number
-  program_id: number
+  campaign_id: Uint64String
+  program_id: Uint64String
   consent_version: number
   scope_bits: number
   policy_hash: string
@@ -333,6 +353,33 @@ function unknownRecordString(record: Record<string, unknown>, key: string): stri
 function unknownRecordNumber(record: Record<string, unknown>, key: string): number | undefined {
   const value = Number(record[key])
   return Number.isFinite(value) ? value : undefined
+}
+
+function optionalUint64(value: unknown, label: string): Uint64String | undefined {
+  try {
+    return canonicalUint64(value, label)
+  } catch {
+    return undefined
+  }
+}
+
+function positiveUint64(value: unknown, label: string): Uint64String {
+  const canonical = canonicalUint64(value, label)
+  if (canonical === '0') {
+    throw new Error(`${label} must be greater than zero`)
+  }
+  return canonical
+}
+
+function optionalPositiveUint64(value: unknown, label: string): Uint64String | undefined {
+  const canonical = optionalUint64(value, label)
+  return canonical && canonical !== '0' ? canonical : undefined
+}
+
+function compareUint64(left: unknown, right: unknown, label = 'uint64'): number {
+  const lhs = BigInt(canonicalUint64(left, label))
+  const rhs = BigInt(canonicalUint64(right, label))
+  return lhs < rhs ? -1 : lhs > rhs ? 1 : 0
 }
 
 function unknownRecordBoolean(record: Record<string, unknown>, key: string): boolean | undefined {
@@ -401,10 +448,10 @@ function firstText(record: Record<string, unknown>, keys: string[]): string | un
   return undefined
 }
 
-function traceModelId(record: Record<string, unknown>): number | undefined {
+function traceModelId(record: Record<string, unknown>): Uint64String | undefined {
   for (const key of ['fusion_model_id', 'model_id', 'selected_model_id']) {
-    const value = unknownRecordNumber(record, key)
-    if (value !== undefined && value > 0) {
+    const value = optionalPositiveUint64(record[key], `trace ${key}`)
+    if (value) {
       return value
     }
   }
@@ -490,8 +537,8 @@ export function parseActiveDataConsent(
   if (candidate.revoked_at && epochSeconds(candidate.revoked_at)) {
     return undefined
   }
-  const campaignId = positiveInteger(candidate.campaign_id)
-  const programId = positiveInteger(candidate.program_id)
+  const campaignId = optionalPositiveUint64(candidate.campaign_id, 'consent campaign id')
+  const programId = optionalPositiveUint64(candidate.program_id, 'consent program id')
   const consentVersion = positiveInteger(candidate.consent_version ?? candidate.version)
   const policyHash = hash256(candidate.policy_hash)
   const receiptHash = hash256(candidate.receipt_hash)
@@ -554,6 +601,16 @@ function traceMatchesPackFilters(record: Record<string, unknown>, options: Query
 }
 
 export function buildQueryDatasetFromTraces(lines: string[], options: QueryDatasetPackOptions = {}): QueryDatasetPack {
+  const modelId = options.model_id === undefined
+    ? undefined
+    : canonicalUint64(options.model_id, 'query dataset model id')
+  const baseModelId = options.base_model_id === undefined
+    ? undefined
+    : canonicalUint64(options.base_model_id, 'query dataset base model id')
+  const fusionParentModelId = options.fusion_parent_model_id === undefined
+    ? undefined
+    : canonicalUint64(options.fusion_parent_model_id, 'query dataset fusion parent model id')
+  const normalizedOptions = {...options, model_id: modelId}
   const minUsefulBps = Number(options.min_useful_bps ?? 8500)
   const maxExamples = Number(options.max_examples ?? 0)
   const asOfEpochSec = Number(options.as_of_epoch_sec ?? Math.floor(Date.now() / 1000))
@@ -562,7 +619,7 @@ export function buildQueryDatasetFromTraces(lines: string[], options: QueryDatas
   const promptHashes: string[] = []
   const traceHashes: string[] = []
   const exampleHashes: string[] = []
-  const campaignIds: number[] = []
+  const campaignIds: Uint64String[] = []
   const consentPolicyHashes: string[] = []
   const consentReceiptHashes: string[] = []
   const seenExamples = new Set<string>()
@@ -588,7 +645,7 @@ export function buildQueryDatasetFromTraces(lines: string[], options: QueryDatas
       incrementSkipped(skipped, 'invalid_json')
       continue
     }
-    if (!traceMatchesPackFilters(record, options, skipped)) {
+    if (!traceMatchesPackFilters(record, normalizedOptions, skipped)) {
       continue
     }
 
@@ -684,7 +741,7 @@ export function buildQueryDatasetFromTraces(lines: string[], options: QueryDatas
   const trainingMetadata = options.expert_role ? {
     training_kind: 'expert',
     expert_role: options.expert_role,
-    fusion_parent_model_id: options.fusion_parent_model_id ?? options.base_model_id,
+    fusion_parent_model_id: fusionParentModelId ?? baseModelId,
   } : undefined
   const manifest: QueryDatasetManifest = {
     format: 'harbor.ai.query-dataset.v2',
@@ -692,16 +749,16 @@ export function buildQueryDatasetFromTraces(lines: string[], options: QueryDatas
     dataset_hash: datasetHash,
     source: 'harbor-ai-query-traces',
     contributor: options.contributor,
-    base_model_id: options.base_model_id,
-    model_id: options.model_id,
+    base_model_id: baseModelId,
+    model_id: modelId,
     expert_role: options.expert_role,
-    fusion_parent_model_id: options.fusion_parent_model_id,
+    fusion_parent_model_id: fusionParentModelId,
     task: options.task,
     example_count: examples.length,
     example_hashes: exampleHashes,
     prompt_hashes: [...new Set(promptHashes)],
     trace_hashes: traceHashes,
-    campaign_ids: [...new Set(campaignIds)].sort((left, right) => left - right),
+    campaign_ids: [...new Set(campaignIds)].sort((left, right) => compareUint64(left, right, 'campaign id')),
     consent_policy_hashes: [...new Set(consentPolicyHashes)].sort(),
     consent_receipt_hashes: [...new Set(consentReceiptHashes)].sort(),
     quality_policy: {
@@ -755,11 +812,8 @@ function parseLogitMode(value: string | undefined): FusionLogitMode {
 
 export function parseFusionExpertSpec(value: string): FusionExpertSpec {
   const [modelRaw, roleRaw, weightRaw] = value.split(':')
-  const modelId = Number(modelRaw)
+  const modelId = positiveUint64(modelRaw, `fusion expert model id in ${value}`)
   const weight = Number(weightRaw ?? 1)
-  if (!Number.isInteger(modelId) || modelId <= 0) {
-    throw new Error(`invalid fusion expert model id in ${value}`)
-  }
   const role = roleRaw && roleRaw.trim() !== '' ? roleRaw.trim() : 'auto'
   if (!Number.isFinite(weight) || weight <= 0) {
     throw new Error(`invalid fusion expert weight in ${value}`)
@@ -768,9 +822,7 @@ export function parseFusionExpertSpec(value: string): FusionExpertSpec {
 }
 
 export function buildFusionManifest(input: FusionManifestInput): FusionManifest {
-  if (!Number.isInteger(input.base_model_id) || input.base_model_id <= 0) {
-    throw new Error('base_model_id must be a positive integer')
-  }
+  const baseModelId = positiveUint64(input.base_model_id, 'base_model_id')
   const autoExpertCount = Number(input.auto_expert_count ?? 0)
   if (!Number.isInteger(autoExpertCount) || autoExpertCount < 0) {
     throw new Error('auto_expert_count must be a non-negative integer')
@@ -778,13 +830,15 @@ export function buildFusionManifest(input: FusionManifestInput): FusionManifest 
   if (input.experts.length === 0 && autoExpertCount === 0) {
     throw new Error('at least one fusion expert or --auto-experts count is required')
   }
-  const seen = new Set<number>()
-  for (const expert of input.experts) {
-    if (seen.has(expert.model_id)) {
-      throw new Error(`duplicate fusion expert model id: ${expert.model_id}`)
+  const seen = new Set<Uint64String>()
+  const experts = input.experts.map((expert) => {
+    const modelId = positiveUint64(expert.model_id, 'fusion expert model id')
+    if (seen.has(modelId)) {
+      throw new Error(`duplicate fusion expert model id: ${modelId}`)
     }
-    seen.add(expert.model_id)
-  }
+    seen.add(modelId)
+    return {...expert, model_id: modelId}
+  })
   const logitMode = input.logit_mode ?? 'none'
   const topK = Number(input.logit_top_k ?? 0)
   if (!Number.isInteger(topK) || topK < 0) {
@@ -804,15 +858,15 @@ export function buildFusionManifest(input: FusionManifestInput): FusionManifest 
   )
   const manifest: FusionManifest = {
     format: 'harbor.fusion.v1',
-    base_model_id: input.base_model_id,
-    expert_model_ids: input.experts.map((expert) => expert.model_id),
-    expert_roles: input.experts.map((expert) => expert.role),
-    expert_weights: input.experts.map((expert) => expert.weight),
+    base_model_id: baseModelId,
+    expert_model_ids: experts.map((expert) => expert.model_id),
+    expert_roles: experts.map((expert) => expert.role),
+    expert_weights: experts.map((expert) => expert.weight),
     fusion_strategy: 'routed_expert',
     logit_mode: logitMode,
     logit_top_k: topK,
     selection_policy: selectionPolicy,
-    eval_artifact_id: Number(input.eval_artifact_id ?? 0),
+    eval_artifact_id: canonicalUint64(input.eval_artifact_id ?? '0', 'eval artifact id'),
   }
   if (autoExpertCount > 0) {
     manifest.auto_expert_count = autoExpertCount
@@ -832,39 +886,60 @@ export function buildFusionRegisterPlan(input: {
   modelMetadata?: Record<string, unknown>
 }): FusionRegisterPlan {
   const aiContract = input.aiContract ?? AI_CONTRACT
-  const manifestJson = canonicalJson(input.manifest)
+  if (input.manifest.expert_model_ids.length !== input.manifest.expert_roles.length ||
+      input.manifest.expert_model_ids.length !== input.manifest.expert_weights.length) {
+    throw new Error('fusion manifest expert arrays must have equal lengths')
+  }
+  const manifest = buildFusionManifest({
+    base_model_id: input.manifest.base_model_id,
+    experts: input.manifest.expert_model_ids.map((modelId, index) => ({
+      model_id: modelId,
+      role: input.manifest.expert_roles[index],
+      weight: input.manifest.expert_weights[index],
+    })),
+    logit_mode: input.manifest.logit_mode,
+    logit_top_k: input.manifest.logit_top_k,
+    selection_policy: input.manifest.selection_policy,
+    eval_artifact_id: input.manifest.eval_artifact_id,
+    auto_expert_count: input.manifest.auto_expert_count,
+  })
+  const manifestJson = canonicalJson(manifest)
   const manifestHash = sha256Bytes(Buffer.from(manifestJson))
-  const storageObjectId = input.storageObjectId ?? '<storage_object_id>'
+  const storageObjectId = input.storageObjectId === undefined
+    ? '<storage_object_id>'
+    : canonicalUint64(input.storageObjectId, 'fusion manifest storage object id')
   const contentHash = input.contentHash ?? manifestHash
-  const weightsArtifactId = input.weightsArtifactId ?? '<weights_artifact_id>'
+  const weightsArtifactId = input.weightsArtifactId === undefined
+    ? '<weights_artifact_id>'
+    : canonicalUint64(input.weightsArtifactId, 'fusion weights artifact id')
   const artifactMetadata = {
     format: 'harbor.fusion.v1',
     kind: 'fusion_manifest',
     manifest_hash: manifestHash,
-    base_model_id: input.manifest.base_model_id,
-    expert_model_ids: input.manifest.expert_model_ids,
-    auto_expert_count: input.manifest.auto_expert_count,
-    logit_mode: input.manifest.logit_mode,
+    base_model_id: manifest.base_model_id,
+    expert_model_ids: manifest.expert_model_ids,
+    auto_expert_count: manifest.auto_expert_count,
+    logit_mode: manifest.logit_mode,
     ...input.manifestMetadata,
   }
   const modelMetadata = {
     format: 'harbor.fusion.v1',
     source: 'harbor-ai-fusion-register',
-    fusion_strategy: input.manifest.fusion_strategy,
+    fusion_strategy: manifest.fusion_strategy,
     fusion_manifest_hash: manifestHash,
     fusion_manifest_artifact_id: weightsArtifactId,
-    base_model_id: input.manifest.base_model_id,
-    expert_model_ids: input.manifest.expert_model_ids,
-    expert_roles: input.manifest.expert_roles,
-    expert_weights: input.manifest.expert_weights,
-    auto_expert_count: input.manifest.auto_expert_count,
-    logit_mode: input.manifest.logit_mode,
-    logit_top_k: input.manifest.logit_top_k,
-    selection_policy: input.manifest.selection_policy,
+    base_model_id: manifest.base_model_id,
+    expert_model_ids: manifest.expert_model_ids,
+    expert_roles: manifest.expert_roles,
+    expert_weights: manifest.expert_weights,
+    auto_expert_count: manifest.auto_expert_count,
+    logit_mode: manifest.logit_mode,
+    logit_top_k: manifest.logit_top_k,
+    selection_policy: manifest.selection_policy,
     ...input.modelMetadata,
   }
   return {
-    manifest: input.manifest,
+    manifest,
     manifest_json: manifestJson,
     manifest_hash: manifestHash,
     artifact_metadata: artifactMetadata,
@@ -887,9 +962,9 @@ export function buildFusionRegisterPlan(input: {
         data: {
           owner: input.owner,
           model_type: 2,
-          parent_model_id: input.manifest.base_model_id,
+          parent_model_id: manifest.base_model_id,
           weights_artifact_id: weightsArtifactId,
-          eval_artifact_id: input.manifest.eval_artifact_id,
+          eval_artifact_id: manifest.eval_artifact_id,
           title: input.title,
           metadata: JSON.stringify(modelMetadata),
         },
@@ -899,9 +974,8 @@ export function buildFusionRegisterPlan(input: {
 }
 
 export function buildDistributedExpertPlan(input: DistributedExpertPlanInput): DistributedExpertPlan {
-  if (!Number.isInteger(input.base_model_id) || input.base_model_id <= 0) {
-    throw new Error('base_model_id must be a positive integer')
-  }
+  const baseModelId = positiveUint64(input.base_model_id, 'base_model_id')
+  const datasetArtifactId = canonicalUint64(input.dataset_artifact_id ?? '0', 'dataset artifact id')
   if (!input.expert_role.trim()) {
     throw new Error('expert_role is required')
   }
@@ -913,8 +987,8 @@ export function buildDistributedExpertPlan(input: DistributedExpertPlanInput): D
     throw new Error('participant count must match shard_count')
   }
   const aggregationSeed = {
-    base_model_id: input.base_model_id,
-    dataset_artifact_id: input.dataset_artifact_id ?? 0,
+    base_model_id: baseModelId,
+    dataset_artifact_id: datasetArtifactId,
     expert_role: input.expert_role,
     model: input.model ?? '',
     shard_count: input.shard_count,
@@ -928,9 +1002,9 @@ export function buildDistributedExpertPlan(input: DistributedExpertPlanInput): D
       distributed_training: true,
       aggregation_group_id: aggregationGroupId,
       expert_role: input.expert_role,
-      fusion_parent_model_id: input.base_model_id,
-      base_model_id: input.base_model_id,
-      dataset_artifact_id: input.dataset_artifact_id ?? 0,
+      fusion_parent_model_id: baseModelId,
+      base_model_id: baseModelId,
+      dataset_artifact_id: datasetArtifactId,
       model: input.model,
       shard_index: shardIndex,
       shard_count: input.shard_count,
@@ -944,7 +1018,7 @@ export function buildDistributedExpertPlan(input: DistributedExpertPlanInput): D
   })
   return {
     format: 'harbor.distributed_expert_plan.v1',
-    base_model_id: input.base_model_id,
+    base_model_id: baseModelId,
     expert_role: input.expert_role,
     shard_count: input.shard_count,
     aggregation_group_id: aggregationGroupId,
@@ -965,10 +1039,9 @@ export function parseDistributedShardSpec(value: string): DistributedShardArtifa
   if (!Number.isFinite(weight) || weight <= 0) {
     throw new Error(`invalid shard weight in ${value}`)
   }
-  const artifactId = artifactRaw && artifactRaw.trim() !== '' ? Number(artifactRaw) : undefined
-  if (artifactId !== undefined && (!Number.isInteger(artifactId) || artifactId <= 0)) {
-    throw new Error(`invalid shard artifact id in ${value}`)
-  }
+  const artifactId = artifactRaw && artifactRaw.trim() !== ''
+    ? positiveUint64(artifactRaw, `shard artifact id in ${value}`)
+    : undefined
   return {
     shard_index: shardIndex,
     weights_hash: hashRaw.toLowerCase(),
@@ -979,14 +1052,12 @@ export function parseDistributedShardSpec(value: string): DistributedShardArtifa
 }
 
 export function buildDistributedAggregateManifest(input: {
-  base_model_id: number
+  base_model_id: Uint64String
   expert_role: string
   aggregation_group_id: string
   shard_artifacts: DistributedShardArtifactSpec[]
 }): DistributedAggregateManifest {
-  if (!Number.isInteger(input.base_model_id) || input.base_model_id <= 0) {
-    throw new Error('base_model_id must be a positive integer')
-  }
+  const baseModelId = positiveUint64(input.base_model_id, 'base_model_id')
   if (!input.expert_role.trim()) {
     throw new Error('expert_role is required')
   }
@@ -996,7 +1067,14 @@ export function buildDistributedAggregateManifest(input: {
   if (input.shard_artifacts.length < 2) {
     throw new Error('at least two shard artifacts are required')
   }
-  const sorted = [...input.shard_artifacts].sort((left, right) => left.shard_index - right.shard_index)
+  const sorted = input.shard_artifacts
+    .map((shard) => ({
+      ...shard,
+      artifact_id: shard.artifact_id === undefined
+        ? undefined
+        : positiveUint64(shard.artifact_id, 'distributed shard artifact id'),
+    }))
+    .sort((left, right) => left.shard_index - right.shard_index)
   const seen = new Set<number>()
   for (const shard of sorted) {
     if (seen.has(shard.shard_index)) {
@@ -1006,7 +1084,7 @@ export function buildDistributedAggregateManifest(input: {
   }
   return {
     format: 'harbor.gemma.mlx.aggregate-manifest.v1',
-    base_model_id: input.base_model_id,
+    base_model_id: baseModelId,
     expert_role: input.expert_role,
     aggregation_group_id: input.aggregation_group_id,
     aggregation_strategy: 'weighted_lora_average',
@@ -1163,22 +1241,22 @@ export function buildTuneNeeds(
 ): TuneNeed[] {
   const confidenceThreshold = options.confidenceThreshold ?? 8500
   const minCount = options.minCount ?? 1
-  const subcallsByInfer = new Map<number, number>()
+  const subcallsByInfer = new Map<Uint64String, number>()
   for (const subcall of subcalls) {
-    const inferId = Number(subcall.parent_infer_id)
-    if (Number.isFinite(inferId) && inferId > 0) {
+    const inferId = optionalPositiveUint64(subcall.parent_infer_id, 'subcall parent inference id')
+    if (inferId) {
       subcallsByInfer.set(inferId, (subcallsByInfer.get(inferId) ?? 0) + 1)
     }
   }
 
   const groups = new Map<string, {
-    base_model_id: number
+    base_model_id: Uint64String
     task: string
     route_count: number
     low_confidence_count: number
     subcall_count: number
     confidence_sum: number
-    infer_ids: Set<number>
+    infer_ids: Set<Uint64String>
     request_hashes: Set<string>
     signals: Set<string>
   }>()
@@ -1194,14 +1272,14 @@ export function buildTuneNeeds(
     if (!routeNeedsTune(route, metadata, confidenceThreshold)) {
       continue
     }
-    const baseModelId = Number(route.selected_model_id)
-    if (!Number.isFinite(baseModelId) || baseModelId <= 0) {
+    const baseModelId = optionalPositiveUint64(route.selected_model_id, 'route selected model id')
+    if (!baseModelId) {
       continue
     }
     const task = metadataText(metadata, ['task', 'goal', 'domain', 'intent', 'choice']) ?? `model-${baseModelId}`
     const key = `${baseModelId}:${task}`
     const confidence = Number(route.confidence_bps)
-    const inferId = Number(route.infer_id ?? 0)
+    const inferId = optionalPositiveUint64(route.infer_id ?? '0', 'route inference id')
     const group = groups.get(key) ?? {
       base_model_id: baseModelId,
       task,
@@ -1209,7 +1287,7 @@ export function buildTuneNeeds(
       low_confidence_count: 0,
       subcall_count: 0,
       confidence_sum: 0,
-      infer_ids: new Set<number>(),
+      infer_ids: new Set<Uint64String>(),
       request_hashes: new Set<string>(),
       signals: new Set<string>(),
     }
@@ -1220,7 +1298,7 @@ export function buildTuneNeeds(
         group.low_confidence_count += 1
       }
     }
-    if (inferId > 0) {
+    if (inferId) {
       group.infer_ids.add(inferId)
       group.subcall_count += subcallsByInfer.get(inferId) ?? 0
     }
@@ -1236,7 +1314,8 @@ export function buildTuneNeeds(
 
   return [...groups.values()]
     .filter((group) => group.route_count >= minCount)
-    .sort((a, b) => b.route_count - a.route_count || b.subcall_count - a.subcall_count || a.base_model_id - b.base_model_id)
+    .sort((a, b) => b.route_count - a.route_count || b.subcall_count - a.subcall_count ||
+      compareUint64(a.base_model_id, b.base_model_id, 'base model id'))
     .map((group) => {
       const title = `Fine-tune ${group.task}`
       const metadata = {
@@ -1249,8 +1328,10 @@ export function buildTuneNeeds(
         trusted_signal_count: options.trustedOnly ? group.route_count : undefined,
       }
       const proposer = options.proposer ?? '<proposer>'
-      const dataset = options.datasetArtifactId ?? '<dataset_artifact_id>'
-      const evalArtifact = options.evalArtifactId ?? '0'
+      const dataset = options.datasetArtifactId === undefined
+        ? '<dataset_artifact_id>'
+        : canonicalUint64(options.datasetArtifactId, 'tune dataset artifact id')
+      const evalArtifact = canonicalUint64(options.evalArtifactId ?? '0', 'tune eval artifact id')
       const expires = options.expiresSec ?? '604800'
       return {
         base_model_id: group.base_model_id,
@@ -1280,7 +1361,7 @@ function tuneMatchesNeed(tune: TuneRequestRow, need: TuneNeed): boolean {
   if (Number(tune.status) !== 0) {
     return false
   }
-  if (Number(tune.base_model_id) !== need.base_model_id) {
+  if (canonicalUint64(tune.base_model_id, 'tune base model id') !== need.base_model_id) {
     return false
   }
   const needTask = normalizeTask(String(need.metadata.task ?? ''))
@@ -1300,13 +1381,16 @@ export function buildTuneAutoVotePlan(
   options: {quantity: string},
 ): TuneAutoVotePlan[] {
   const plans: TuneAutoVotePlan[] = []
-  const usedTuneIds = new Set<number>()
+  const usedTuneIds = new Set<Uint64String>()
   for (const need of needs) {
-    const tune = tunes.find((candidate) => !usedTuneIds.has(Number(candidate.id)) && tuneMatchesNeed(candidate, need))
+    const tune = tunes.find((candidate) => {
+      const tuneId = canonicalUint64(candidate.id, 'tune id')
+      return !usedTuneIds.has(tuneId) && tuneMatchesNeed(candidate, need)
+    })
     if (!tune) {
       continue
     }
-    const tuneId = Number(tune.id)
+    const tuneId = positiveUint64(tune.id, 'tune id')
     usedTuneIds.add(tuneId)
     plans.push({
       tune_id: tuneId,
@@ -1408,10 +1492,10 @@ function decisionApproves(decision: TrustedAiDecision, minUsefulBps: number): bo
   return score === 0 || score >= minUsefulBps
 }
 
-async function existingTuneVote(contract: string, tuneId: number, voter: string, options: {url?: string}): Promise<boolean> {
+async function existingTuneVote(contract: string, tuneId: Uint64String, voter: string, options: {url?: string}): Promise<boolean> {
   const rows = await getTableRows<{voter: string}>(contract, 'votes', {
     url: options.url,
-    scope: String(tuneId),
+    scope: canonicalUint64(tuneId, 'tune id'),
     lowerBound: voter,
     upperBound: voter,
     limit: 1,
@@ -1543,7 +1627,7 @@ function addTuneAutoVoteCommand(tune: Command): void {
     const initialPlans = buildTuneAutoVotePlan(needs, tunes.rows, {quantity}).slice(0, Number(options.limit ?? 20))
     const minUsefulBps = Number(options.minUsefulBps ?? 8500)
     const plans: TuneAutoVotePlan[] = []
-    const skipped: Array<{tune_id: number; reason: string}> = []
+    const skipped: Array<{tune_id: Uint64String; reason: string}> = []
 
     for (const plan of initialPlans) {
       if (!options.revote && await existingTuneVote(contract, plan.tune_id, options.voter, {url: options.url})) {
@@ -1700,9 +1784,9 @@ function addTrustCommand(ai: Command): void {
         kind: 'harbor.ai.route_verification',
         router: 'harbor-cli',
         provider: 'smoke',
-        policy_id: 0,
-        infer_id: 0,
-        model_id: 0,
+        policy_id: '0',
+        infer_id: '0',
+        model_id: '0',
         request_hash: 'smoke',
         user: options.user ?? '',
         task: options.task ?? 'harbor-safety-smoke',
@@ -1763,9 +1847,9 @@ function addOfferCommand(ai: Command): void {
         provider,
         service_type: service.id,
         segment_kind: 1,
-        range_start: options.rangeStart ?? '0',
-        range_end: options.rangeEnd ?? '0',
-        capacity_bytes: Number(options.capacityBytes ?? 0),
+        range_start: canonicalUint64(options.rangeStart ?? '0', 'service range start'),
+        range_end: canonicalUint64(options.rangeEnd ?? '0', 'service range end'),
+        capacity_bytes: canonicalUint64(options.capacityBytes ?? '0', 'service capacity bytes'),
         endpoint,
         metadata,
       },
@@ -1836,45 +1920,122 @@ async function readFusionManifest(file: string): Promise<FusionManifest> {
     throw new Error(`not a Harbor fusion manifest: ${file}`)
   }
   const experts = (parsed.expert_model_ids ?? []).map((modelId, index) => ({
-    model_id: Number(modelId),
+    model_id: positiveUint64(modelId, `fusion expert model id ${index}`),
     role: String(parsed.expert_roles?.[index] ?? ''),
     weight: Number(parsed.expert_weights?.[index] ?? 1),
   }))
   return buildFusionManifest({
-    base_model_id: Number(parsed.base_model_id),
+    base_model_id: positiveUint64(parsed.base_model_id, 'fusion base model id'),
     experts,
     logit_mode: parseLogitMode(parsed.logit_mode),
     logit_top_k: Number(parsed.logit_top_k ?? 0),
     selection_policy: isPlainObject(parsed.selection_policy) ? parsed.selection_policy : undefined,
-    eval_artifact_id: Number(parsed.eval_artifact_id ?? 0),
+    eval_artifact_id: canonicalUint64(parsed.eval_artifact_id ?? '0', 'fusion eval artifact id'),
     auto_expert_count: Number(parsed.auto_expert_count ?? 0),
   })
 }
 
-async function resolveArtifactId(contract: string, owner: string, kind: number, storageObjectId: number, contentHash: string, options: {url?: string}): Promise<number> {
-  const rows = await getTableRows<AiArtifactRow>(contract, 'artifacts', {url: options.url, scope: contract, limit: 1000})
-  const matches = rows.rows
+export async function resolveArtifactId(
+  contract: string,
+  owner: string,
+  kind: number,
+  storageObjectId: number | string,
+  contentHash: string,
+  options: {
+    url?: string
+    minimumIdInclusive: string
+    maximumIdExclusive?: string
+    transactionResult?: unknown
+  },
+): Promise<Uint64String> {
+  const minimum = canonicalUint64(options.minimumIdInclusive, 'pre-registration next artifact id')
+  const maximum = canonicalUint64(
+    options.maximumIdExclusive ?? await readContractNextId(contract, 'next_artifact_id', {url: options.url}),
+    'post-registration next artifact id',
+  )
+  if (BigInt(maximum) <= BigInt(minimum)) {
+    throw new Error('AI artifact registration did not advance next_artifact_id')
+  }
+  const returned = actionUint64Return(options.transactionResult, contract, 'addartifact')
+  const lowerBound = returned ?? minimum
+  const upperBound = returned ? (BigInt(returned) + 1n).toString() : maximum
+  if (BigInt(lowerBound) < BigInt(minimum) || BigInt(lowerBound) >= BigInt(maximum)) {
+    throw new Error('AI artifact action returned an id outside its registration window')
+  }
+  const rows = await getAllTableRows<AiArtifactRow>(contract, 'artifacts', {
+    url: options.url,
+    scope: contract,
+    lowerBound,
+    upperBound,
+    limit: 1000,
+    indexPosition: '1',
+    keyType: 'i64',
+  })
+  const expectedStorageId = canonicalUint64(storageObjectId, 'artifact storage object id')
+  const matches = rows
     .filter((row) =>
       row.owner === owner &&
       Number(row.kind) === kind &&
-      Number(row.storage_object_id) === storageObjectId &&
+      canonicalUint64(row.storage_object_id, 'artifact storage object id') === expectedStorageId &&
       row.content_hash === contentHash
     )
-    .sort((left, right) => Number(right.id) - Number(left.id))
-  const artifact = matches[0]
-  if (!artifact) {
-    throw new Error(`AI artifact kind ${kind} was not found for storage object ${storageObjectId}`)
+  if (matches.length !== 1) {
+    throw new Error(`AI artifact registration resolved ${matches.length} newly created rows for storage object ${storageObjectId}`)
   }
-  return Number(artifact.id)
+  const artifactId = canonicalUint64(matches[0].id, 'AI artifact id')
+  if (returned && artifactId !== returned) {
+    throw new Error('AI artifact action return value does not match the created row')
+  }
+  return artifactId
 }
 
-async function resolveModelId(contract: string, owner: string, weightsArtifactId: number, manifestHash: string, options: {url?: string}): Promise<number | undefined> {
-  const rows = await getTableRows<AiModelRow>(contract, 'models', {url: options.url, scope: contract, limit: 1000})
-  const matches = rows.rows
-    .filter((row) => row.owner === owner && Number(row.weights_artifact_id) === weightsArtifactId)
+export async function resolveModelId(
+  contract: string,
+  owner: string,
+  weightsArtifactId: number | string,
+  manifestHash: string,
+  options: {
+    url?: string
+    minimumIdInclusive: string
+    maximumIdExclusive?: string
+    transactionResult?: unknown
+  },
+): Promise<Uint64String> {
+  const minimum = canonicalUint64(options.minimumIdInclusive, 'pre-registration next model id')
+  const maximum = canonicalUint64(
+    options.maximumIdExclusive ?? await readContractNextId(contract, 'next_model_id', {url: options.url}),
+    'post-registration next model id',
+  )
+  if (BigInt(maximum) <= BigInt(minimum)) {
+    throw new Error('AI model registration did not advance next_model_id')
+  }
+  const returned = actionUint64Return(options.transactionResult, contract, 'regmodel')
+  const lowerBound = returned ?? minimum
+  const upperBound = returned ? (BigInt(returned) + 1n).toString() : maximum
+  if (BigInt(lowerBound) < BigInt(minimum) || BigInt(lowerBound) >= BigInt(maximum)) {
+    throw new Error('AI model action returned an id outside its registration window')
+  }
+  const rows = await getAllTableRows<AiModelRow>(contract, 'models', {
+    url: options.url,
+    scope: contract,
+    lowerBound,
+    upperBound,
+    limit: 1000,
+    indexPosition: '1',
+    keyType: 'i64',
+  })
+  const expectedArtifactId = canonicalUint64(weightsArtifactId, 'weights artifact id')
+  const matches = rows
+    .filter((row) => row.owner === owner && canonicalUint64(row.weights_artifact_id, 'weights artifact id') === expectedArtifactId)
     .filter((row) => parseMetadata(row.metadata).fusion_manifest_hash === manifestHash)
-    .sort((left, right) => Number(right.id) - Number(left.id))
-  return matches[0] ? Number(matches[0].id) : undefined
+  if (matches.length !== 1) {
+    throw new Error(`AI model registration resolved ${matches.length} newly created rows for artifact ${weightsArtifactId}`)
+  }
+  const modelId = canonicalUint64(matches[0].id, 'AI model id')
+  if (returned && modelId !== returned) {
+    throw new Error('AI model action return value does not match the created row')
+  }
+  return modelId
 }
 
 function collectOption(value: string, previous: string[]): string[] {
@@ -1898,7 +2059,9 @@ export function validateQueryDatasetManifest(parsed: unknown, label = 'manifest'
   }
   const hashArray = (value: unknown): value is string[] =>
     Array.isArray(value) && value.length > 0 && value.every((entry) => Boolean(hash256(entry)))
-  const campaignIds = parsed.campaign_ids
+  const campaignIds = Array.isArray(parsed.campaign_ids)
+    ? parsed.campaign_ids.map((entry) => optionalPositiveUint64(entry, 'manifest campaign id'))
+    : []
   const privacy = parsed.privacy_policy
   const scopes = isPlainObject(privacy) ? privacy.required_scopes : undefined
   if (
@@ -1911,9 +2074,8 @@ export function validateQueryDatasetManifest(parsed: unknown, label = 'manifest'
     !hashArray(parsed.trace_hashes) ||
     parsed.trace_hashes.length !== Number(parsed.example_count) ||
     !hashArray(parsed.prompt_hashes) ||
-    !Array.isArray(campaignIds) ||
     campaignIds.length === 0 ||
-    !campaignIds.every((entry) => Boolean(positiveInteger(entry))) ||
+    campaignIds.some((entry) => !entry) ||
     !hashArray(parsed.consent_policy_hashes) ||
     !hashArray(parsed.consent_receipt_hashes) ||
     !isPlainObject(privacy) ||
@@ -1925,7 +2087,19 @@ export function validateQueryDatasetManifest(parsed: unknown, label = 'manifest'
   ) {
     throw new Error(`incomplete consent-aware query dataset manifest: ${label}`)
   }
-  return parsed as unknown as QueryDatasetManifest
+  const normalized = {...parsed} as unknown as QueryDatasetManifest
+  normalized.campaign_ids = campaignIds as Uint64String[]
+  for (const [field, label] of [
+    ['base_model_id', 'manifest base model id'],
+    ['model_id', 'manifest model id'],
+    ['fusion_parent_model_id', 'manifest fusion parent model id'],
+  ] as const) {
+    const value = parsed[field]
+    if (value !== undefined) {
+      normalized[field] = positiveUint64(value, label)
+    }
+  }
+  return normalized
 }
 
 async function readQueryDatasetManifest(file?: string): Promise<QueryDatasetManifest | undefined> {
@@ -2015,10 +2189,12 @@ function addDataCommand(ai: Command): void {
         contributor: options.contributor,
         task: options.task,
         user: options.user,
-        model_id: options.modelId ? Number(options.modelId) : undefined,
-        base_model_id: options.baseModelId ? Number(options.baseModelId) : undefined,
+        model_id: options.modelId ? positiveUint64(options.modelId, 'model id') : undefined,
+        base_model_id: options.baseModelId ? positiveUint64(options.baseModelId, 'base model id') : undefined,
         expert_role: options.expertRole,
-        fusion_parent_model_id: options.fusionParentModelId ? Number(options.fusionParentModelId) : undefined,
+        fusion_parent_model_id: options.fusionParentModelId
+          ? positiveUint64(options.fusionParentModelId, 'fusion parent model id')
+          : undefined,
         min_useful_bps: Number(options.minUsefulBps ?? 8500),
         include_all: Boolean(options.includeAll),
         include_low_score: Boolean(options.includeLowScore),
@@ -2058,7 +2234,14 @@ function addDataCommand(ai: Command): void {
       .option('--market-contract <account>', 'service market contract account', MARKET_CONTRACT)
       .option('--storage-contract <account>', 'storage registry contract account', process.env.HARBOR_STORAGE_CONTRACT ?? 'harborstore')
       .option('--router-url <url>', 'explicit storage router endpoint for Harbor-backed storage')
-      .option('--private-key <key>', 'local dataset encryption key (or HARBOR_AI_DATA_KEY)')
+      .option('--recipient-public-key <file>', 'unique per-dataset governed-data public key JSON (or HARBOR_AI_DATA_RECIPIENT_PUBLIC_KEY)')
+      .option('--vault-policy-id <id>', 'sanitized-data Vault policy id')
+      .option('--vault-consent-id <id>', 'sanitized-data Vault consent id')
+      .option('--purpose <purpose>', 'governed processing purpose', 'specialist-training')
+      .option('--ttl-sec <seconds>', 'envelope and temporary-object lifetime', '86400')
+      .option('--key-custodians <json>', 'JSON array of accounts required to attest key erasure')
+      .option('--prepared-output <path>', 'persist exact governed envelope bytes here before chain registration')
+      .option('--private-key <key>', 'removed legacy option; password-derived encryption is rejected')
       .option('--walrus-command <path>', 'Walrus CLI command', process.env.WALRUS_CLI ?? 'walrus')
       .option('--walrus-publisher-url <url>', 'Walrus publisher URL')
       .option('--walrus-aggregator-url <url>', 'Walrus aggregator URL to preserve in metadata')
@@ -2073,6 +2256,13 @@ function addDataCommand(ai: Command): void {
     storageContract?: string
     routerUrl?: string
     privateKey?: string
+    recipientPublicKey?: string
+    vaultPolicyId?: string
+    vaultConsentId?: string
+    purpose?: string
+    ttlSec?: string
+    keyCustodians?: string
+    preparedOutput?: string
     walrusCommand?: string
     walrusPublisherUrl?: string
     walrusAggregatorUrl?: string
@@ -2088,8 +2278,7 @@ function addDataCommand(ai: Command): void {
   }) => {
     const contract = options.contract ?? AI_CONTRACT
     const file = path.resolve(datasetFile)
-    const datasetBytes = await fs.readFile(file)
-    const datasetHash = sha256Bytes(datasetBytes)
+    const datasetHash = await hashFile(file)
     const manifest = await readQueryDatasetManifest(options.manifest)
     if (!manifest) {
       throw new Error('a consent-aware harbor.ai.query-dataset.v2 manifest is required')
@@ -2105,9 +2294,19 @@ function addDataCommand(ai: Command): void {
       metadata: options.metadata ? parseObjectJson(options.metadata, 'metadata') : undefined,
     })
     const storageMetadata = JSON.stringify(artifactMetadata)
-    const privateKey = options.privateKey ?? process.env.HARBOR_AI_DATA_KEY
-    if (!options.dryRun && !privateKey) {
-      throw new Error('consented AI datasets must be encrypted; pass --private-key or set HARBOR_AI_DATA_KEY')
+    if (options.privateKey || process.env.HARBOR_AI_DATA_KEY) {
+      throw new Error('password-derived AI data encryption was removed; use a governed recipient public key')
+    }
+    const recipientPublicKey = options.recipientPublicKey ?? process.env.HARBOR_AI_DATA_RECIPIENT_PUBLIC_KEY
+    const governedRequired: Array<[string, string | undefined]> = [
+      ['--recipient-public-key', recipientPublicKey],
+      ['--vault-policy-id', options.vaultPolicyId],
+      ['--vault-consent-id', options.vaultConsentId],
+      ['--key-custodians', options.keyCustodians],
+    ]
+    const missingGoverned = governedRequired.filter(([, value]) => !value).map(([flag]) => flag)
+    if (!options.dryRun && missingGoverned.length > 0) {
+      throw new Error(`consented AI datasets require governed encryption options: ${missingGoverned.join(', ')}`)
     }
     const plannedAction = {
       contract,
@@ -2116,7 +2315,7 @@ function addDataCommand(ai: Command): void {
         owner,
         kind: 2,
         storage_object_id: '<storage_object_id>',
-        content_hash: datasetHash,
+        content_hash: '<encrypted_storage_content_hash>',
         metadata: JSON.stringify(artifactMetadata),
       },
     }
@@ -2129,6 +2328,9 @@ function addDataCommand(ai: Command): void {
         dataset_hash: datasetHash,
         manifest_hash: manifestHash,
         encrypted: true,
+        temporary: true,
+        governed_envelope: 'harbor.governed-data-envelope.v1',
+        missing_governed_options: missingGoverned,
         artifact_metadata: artifactMetadata,
         actions: [plannedAction],
       }, options.json)
@@ -2138,6 +2340,40 @@ function addDataCommand(ai: Command): void {
     if (options.backend && options.backend !== 'harbor' && options.backend !== 'walrus') {
       throw new Error(`unknown storage backend: ${options.backend}`)
     }
+    const ttlSec = Number(options.ttlSec ?? 86400)
+    if (!Number.isSafeInteger(ttlSec) || ttlSec <= 0) {
+      throw new Error('--ttl-sec must be a positive safe integer')
+    }
+    let keyCustodians: unknown
+    try {
+      keyCustodians = JSON.parse(options.keyCustodians as string)
+    } catch {
+      throw new Error('--key-custodians must be a JSON array')
+    }
+    if (!Array.isArray(keyCustodians) || keyCustodians.length === 0 ||
+        keyCustodians.some((value) => typeof value !== 'string' || !value)) {
+      throw new Error('--key-custodians must be a non-empty JSON array of accounts')
+    }
+    const recipientKey = parseVaultPublicKey(await fs.readFile(recipientPublicKey as string, 'utf8'))
+    const createdAt = Math.floor(Date.now() / 1000)
+    const governed: GovernedStorageEncryption = {
+      recipientPublicKey: recipientKey.publicKey,
+      context: {
+        policy_id: options.vaultPolicyId as string,
+        consent_id: options.vaultConsentId as string,
+        receipt_id: '',
+        object_id: '',
+        purpose: options.purpose ?? 'specialist-training',
+        created_at: createdAt,
+        expires_at: createdAt + ttlSec,
+      },
+      recipient: {
+        grant_id: '',
+        processor: '',
+        key_id: recipientKey.keyId,
+      },
+      keyCustodians: keyCustodians as string[],
+    }
     const stored = options.backend === 'walrus'
       ? await putWalrusObject({
         ...options,
@@ -2145,7 +2381,7 @@ function addDataCommand(ai: Command): void {
         owner,
         metadata: storageMetadata,
         encrypt: true,
-        privateKey,
+        governed,
         contentFormat: 'application/x-ndjson',
       })
       : await putReplicatedObject({
@@ -2154,9 +2390,10 @@ function addDataCommand(ai: Command): void {
         owner,
         metadata: storageMetadata,
         encrypt: true,
-        privateKey,
+        governed,
       })
     const actorOptions = {...options, actor: options.actor ?? owner}
+    const minimumArtifactId = await readContractNextId(contract, 'next_artifact_id', {url: options.url})
     const artifactTx = await pushAction({
       contract,
       action: 'addartifact',
@@ -2174,7 +2411,11 @@ function addDataCommand(ai: Command): void {
       authorization: actorOptions.auth,
       expiration: actorOptions.expiration,
     })
-    const artifactId = await resolveArtifactId(contract, owner, 2, Number(stored.object_id), stored.content_hash, {url: options.url})
+    const artifactId = await resolveArtifactId(contract, owner, 2, stored.object_id, stored.content_hash, {
+      url: options.url,
+      minimumIdInclusive: minimumArtifactId,
+      transactionResult: artifactTx,
+    })
     printResult({
       ok: true,
       owner,
@@ -2192,61 +2433,14 @@ function addDataCommand(ai: Command): void {
   addTxOptions(
     data
       .command('contribute <contributor> <tune_id> <dataset_artifact_id>')
-      .description('Attach a query-derived dataset artifact to an existing tune proposal')
+      .description(`Compatibility-disabled contribdata alias: ${DISABLED_DATA_CONTRIBUTION}`)
       .option('-c, --contract <account>', 'Harbor AI contract account', AI_CONTRACT)
       .option('--reward-weight <bps>', 'relative data reward weight in basis points', '10000')
       .option('--manifest-hash <hash>', 'query dataset manifest hash to preserve in contribution metadata')
       .option('--metadata <json>', 'additional contribution metadata JSON object')
       .option('--dry-run', 'print the planned action without broadcasting')
-  ).action(async (contributor: string, tuneId: string, datasetArtifactId: string, options: {
-    contract?: string
-    rewardWeight?: string
-    manifestHash?: string
-    metadata?: string
-    dryRun?: boolean
-    url?: string
-    actor?: string
-    permission?: string
-    key?: string
-    auth?: string
-    json?: boolean
-    expiration?: string
-  }) => {
-    const contract = options.contract ?? AI_CONTRACT
-    const metadata = {
-      source: 'harbor-ai-query-data',
-      format: 'harbor.ai.query-dataset.v2',
-      manifest_hash: options.manifestHash,
-      ...(options.metadata ? parseObjectJson(options.metadata, 'metadata') : {}),
-    }
-    const plannedAction = {
-      contract,
-      action: 'contribdata',
-      data: {
-        contributor,
-        tune_id: Number(tuneId),
-        dataset_artifact_id: Number(datasetArtifactId),
-        reward_weight: Number(options.rewardWeight ?? 10000),
-        metadata: JSON.stringify(metadata),
-      },
-    }
-    if (options.dryRun) {
-      printResult({dry_run: true, actions: [plannedAction]}, options.json)
-      return
-    }
-    const action = await serializeAction({
-      contract,
-      action: 'contribdata',
-      data: plannedAction.data,
-      url: options.url,
-      actor: options.actor ?? contributor,
-      permission: options.permission,
-      key: options.key,
-      authorization: options.auth,
-      expiration: options.expiration,
-    })
-    const result = await transactActions({...options, actor: options.actor ?? contributor}, [action])
-    printResult({ok: true, action: plannedAction, result}, options.json)
+  ).action(async () => {
+    throw new Error(`contribdata is compatibility-disabled: ${DISABLED_DATA_CONTRIBUTION}`)
   })
 
   ai.addCommand(data)
@@ -2282,13 +2476,13 @@ function addFusionCommand(ai: Command): void {
       json?: boolean
     }) => {
       const manifestObject = buildFusionManifest({
-        base_model_id: Number(baseModelId),
+        base_model_id: positiveUint64(baseModelId, 'base model id'),
         experts: (options.expert ?? []).map(parseFusionExpertSpec),
         auto_expert_count: Number(options.autoExperts ?? 0),
         logit_mode: parseLogitMode(options.logitMode),
         logit_top_k: Number(options.logitTopK ?? 0),
         selection_policy: options.selectionPolicy ? parseObjectJson(options.selectionPolicy, 'selection policy') : undefined,
-        eval_artifact_id: Number(options.evalArtifactId ?? 0),
+        eval_artifact_id: canonicalUint64(options.evalArtifactId ?? '0', 'eval artifact id'),
       })
       const manifestJson = canonicalJson(manifestObject)
       const manifestHash = sha256Bytes(Buffer.from(manifestJson))
@@ -2399,10 +2593,10 @@ function addFusionCommand(ai: Command): void {
         aiContract: contract,
         storageObjectId: stored.object_id,
         contentHash: stored.content_hash,
-        weightsArtifactId: '<pending>',
         manifestMetadata: options.artifactMetadata ? parseObjectJson(options.artifactMetadata, 'artifact metadata') : undefined,
         modelMetadata: options.metadata ? parseObjectJson(options.metadata, 'model metadata') : undefined,
       })
+      const minimumArtifactId = await readContractNextId(contract, 'next_artifact_id', {url: options.url})
       const artifactAction = await serializeAction({
         contract,
         action: 'addartifact',
@@ -2415,7 +2609,11 @@ function addFusionCommand(ai: Command): void {
         expiration: actionOptions.expiration,
       })
       const artifactTx = await transactActions(actionOptions, [artifactAction])
-      const artifactId = await resolveArtifactId(contract, owner, 1, Number(stored.object_id), stored.content_hash, {url: options.url})
+      const artifactId = await resolveArtifactId(contract, owner, 1, stored.object_id, stored.content_hash, {
+        url: options.url,
+        minimumIdInclusive: minimumArtifactId,
+        transactionResult: artifactTx,
+      })
       const finalPlan = buildFusionRegisterPlan({
         manifest: manifestObject,
         owner,
@@ -2427,6 +2625,7 @@ function addFusionCommand(ai: Command): void {
         manifestMetadata: options.artifactMetadata ? parseObjectJson(options.artifactMetadata, 'artifact metadata') : undefined,
         modelMetadata: options.metadata ? parseObjectJson(options.metadata, 'model metadata') : undefined,
       })
+      const minimumModelId = await readContractNextId(contract, 'next_model_id', {url: options.url})
       const modelAction = await serializeAction({
         contract,
         action: 'regmodel',
@@ -2439,7 +2638,11 @@ function addFusionCommand(ai: Command): void {
         expiration: actionOptions.expiration,
       })
       const modelTx = await transactActions(actionOptions, [modelAction])
-      const modelId = await resolveModelId(contract, owner, artifactId, finalPlan.manifest_hash, {url: options.url})
+      const modelId = await resolveModelId(contract, owner, artifactId, finalPlan.manifest_hash, {
+        url: options.url,
+        minimumIdInclusive: minimumModelId,
+        transactionResult: modelTx,
+      })
       printResult({
         ok: true,
         owner,
@@ -2471,21 +2674,27 @@ function addFusionCommand(ai: Command): void {
         getTableRows<RouteLogRow>(contract, 'routelogs', {url: options.url, scope: contract, limit: 1000}),
         getTableRows<SubcallRow>(contract, 'subcalls', {url: options.url, scope: contract, limit: 1000}),
       ])
-      const numericModelId = Number(modelId)
-      const model = models.rows.find((row) => Number(row.id) === numericModelId)
+      const canonicalModelId = positiveUint64(modelId, 'model id')
+      const model = models.rows.find((row) =>
+        canonicalUint64(row.id, 'model row id') === canonicalModelId)
       if (!model) {
         throw new Error(`model not found: ${modelId}`)
       }
       const metadata = parseMetadata(model.metadata)
-      const artifact = artifacts.rows.find((row) => Number(row.id) === Number(model.weights_artifact_id))
+      const weightsArtifactId = canonicalUint64(model.weights_artifact_id, 'weights artifact id')
+      const artifact = artifacts.rows.find((row) =>
+        canonicalUint64(row.id, 'artifact row id') === weightsArtifactId)
       const fusionRoutes = routes.rows.filter((row) => {
         const routeMetadata = parseMetadata(row.metadata)
-        return Number(row.selected_model_id) === numericModelId || Number(routeMetadata.fusion_model_id) === numericModelId
+        return canonicalUint64(row.selected_model_id, 'route selected model id') === canonicalModelId ||
+          optionalUint64(routeMetadata.fusion_model_id, 'route fusion model id') === canonicalModelId
       })
-      const inferIds = new Set(fusionRoutes.map((row) => Number(row.infer_id)).filter((id) => Number.isFinite(id) && id > 0))
+      const inferIds = new Set(fusionRoutes
+        .map((row) => optionalPositiveUint64(row.infer_id, 'route inference id'))
+        .filter((id): id is Uint64String => Boolean(id)))
       const fusionSubcalls = subcalls.rows.filter((row) =>
-        Number(row.from_model_id) === numericModelId ||
-        inferIds.has(Number(row.parent_infer_id))
+        canonicalUint64(row.from_model_id, 'subcall source model id') === canonicalModelId ||
+        inferIds.has(canonicalUint64(row.parent_infer_id, 'subcall parent inference id'))
       )
       const expertParticipation = new Map<string, {calls: number; roles: Set<string>; providers: Set<string>}>()
       for (const route of fusionRoutes) {
@@ -2547,11 +2756,11 @@ function addFusionCommand(ai: Command): void {
       json?: boolean
     }) => {
       const plan = buildDistributedExpertPlan({
-        base_model_id: Number(baseModelId),
+        base_model_id: positiveUint64(baseModelId, 'base model id'),
         expert_role: expertRole,
         shard_count: Number(options.shards ?? 2),
         participants: options.participant ?? [],
-        dataset_artifact_id: Number(options.datasetArtifactId ?? 0),
+        dataset_artifact_id: canonicalUint64(options.datasetArtifactId ?? '0', 'dataset artifact id'),
         model: options.model,
         aggregation_group_id: options.aggregationGroupId,
         metadata: options.metadata ? parseObjectJson(options.metadata, 'metadata') : undefined,
@@ -2585,7 +2794,7 @@ function addFusionCommand(ai: Command): void {
       json?: boolean
     }) => {
       const manifest = buildDistributedAggregateManifest({
-        base_model_id: Number(baseModelId),
+        base_model_id: positiveUint64(baseModelId, 'base model id'),
         expert_role: expertRole,
         aggregation_group_id: options.aggregationGroupId,
         shard_artifacts: (options.shard ?? []).map(parseDistributedShardSpec),
@@ -2616,7 +2825,7 @@ function addFusionCommand(ai: Command): void {
         ...(options.metadata ? parseObjectJson(options.metadata, 'metadata') : {}),
         training_kind: 'expert',
         expert_role: expertRole,
-        fusion_parent_model_id: Number(fusionParentModelId),
+        fusion_parent_model_id: positiveUint64(fusionParentModelId, 'fusion parent model id'),
       }
       if (options.json) {
         printResult({metadata, metadata_json: JSON.stringify(metadata)}, true)
@@ -2669,7 +2878,7 @@ export function createAiCommand(): Command {
       ['min_qualification_reviews', 'number'],
       ['min_bakeoff_scores', 'number'],
       ['community_quorum_bps', 'number'],
-      ['max_voice_weight', 'number'],
+      ['max_voice_weight', 'uint64'],
       ['voice_epoch_sec', 'number'],
       ['runoff_sec', 'number'],
     ],
@@ -2680,7 +2889,7 @@ export function createAiCommand(): Command {
     {
       command: 'add',
       action: 'addartifact',
-      fields: ['owner', ['kind', 'number'], ['storage_object_id', 'number'], 'content_hash', 'metadata'],
+      fields: ['owner', ['kind', 'number'], ['storage_object_id', 'uint64'], 'content_hash', 'metadata'],
       signerField: 'owner',
     },
   ]))
@@ -2689,17 +2898,17 @@ export function createAiCommand(): Command {
     {
       command: 'register',
       action: 'regmodel',
-      fields: ['owner', ['model_type', 'number'], ['parent_model_id', 'number'], ['weights_artifact_id', 'number'], ['eval_artifact_id', 'number'], 'title', 'metadata'],
+      fields: ['owner', ['model_type', 'number'], ['parent_model_id', 'uint64'], ['weights_artifact_id', 'uint64'], ['eval_artifact_id', 'uint64'], 'title', 'metadata'],
       signerField: 'owner',
     },
     {
       command: 'register-remote',
       action: 'regremote',
       fields: [
-        'owner', ['model_type', 'number'], ['parent_model_id', 'number'],
-        ['manifest_artifact_id', 'number'], 'revision_hash', ['terms_artifact_id', 'number'],
+        'owner', ['model_type', 'number'], ['parent_model_id', 'uint64'],
+        ['manifest_artifact_id', 'uint64'], 'revision_hash', ['terms_artifact_id', 'uint64'],
         ['output_distillation_allowed', 'boolean'], ['requires_session_affinity', 'boolean'],
-        ['preserve_thinking_history', 'boolean'], ['eval_artifact_id', 'number'],
+        ['preserve_thinking_history', 'boolean'], ['eval_artifact_id', 'uint64'],
         'api_model_id', 'title', 'metadata',
       ],
       signerField: 'owner',
@@ -2707,8 +2916,32 @@ export function createAiCommand(): Command {
     {
       command: 'set',
       action: 'setmodel',
-      fields: ['owner', ['model_id', 'number'], ['weights_artifact_id', 'number'], ['eval_artifact_id', 'number'], ['status', 'number'], 'title', 'metadata'],
+      fields: ['owner', ['model_id', 'uint64'], ['weights_artifact_id', 'uint64'], ['eval_artifact_id', 'uint64'], ['status', 'number'], 'title', 'metadata'],
       signerField: 'owner',
+    },
+    {
+      command: 'adopt-weights',
+      action: 'adoptweight',
+      fields: ['owner', ['model_id', 'uint64'], ['weights_artifact_id', 'uint64']],
+      signerField: 'owner',
+    },
+    {
+      command: 'bind-custody',
+      action: 'bindmodel',
+      fields: [
+        'actor', ['model_id', 'uint64'], ['weights_artifact_id', 'uint64'],
+        'vault_contract', ['vault_receipt_id', 'uint64'],
+      ],
+      signerField: 'actor',
+    },
+    {
+      command: 'set-tokenizer',
+      action: 'settokenizer',
+      fields: [
+        'actor', ['model_id', 'uint64'], ['tokenizer_artifact_id', 'uint64'],
+        'tokenizer_hash', ['vocab_size', 'number'], ['format_version', 'number'],
+      ],
+      signerField: 'actor',
     },
   ]))
 
@@ -2716,19 +2949,49 @@ export function createAiCommand(): Command {
     {
       command: 'add',
       action: 'addprogram',
-      fields: ['owner', ['current_model_id', 'number'], ['current_compute_class', 'number'], ['eval_artifact_id', 'number'], 'title', 'metadata'],
+      fields: ['owner', ['current_model_id', 'uint64'], ['current_compute_class', 'number'], ['eval_artifact_id', 'uint64'], 'title', 'metadata'],
       signerField: 'owner',
     },
     {
       command: 'set-model-spec',
       action: 'setmodelspec',
       fields: [
-        'owner', ['model_id', 'number'], ['program_id', 'number'], 'revision_hash',
-        ['license_artifact_id', 'number'], ['compute_class', 'number'], ['total_params_m', 'number'],
-        ['active_params_m', 'number'], ['context_tokens', 'number'], ['required_vram_mb', 'number'],
+        'owner', ['model_id', 'uint64'], ['program_id', 'uint64'], 'revision_hash',
+        ['license_artifact_id', 'uint64'], ['compute_class', 'number'], ['total_params_m', 'uint64'],
+        ['active_params_m', 'uint64'], ['context_tokens', 'number'], ['required_vram_mb', 'number'],
         ['training_methods', 'number'], 'metadata',
       ],
       signerField: 'owner',
+    },
+    {command: 'close', action: 'closeprogram', fields: ['owner', ['program_id', 'uint64']], signerField: 'owner'},
+    {
+      command: 'finalize',
+      action: 'finalizeprog',
+      fields: ['actor', ['program_id', 'uint64']],
+      signerField: 'actor',
+    },
+    {
+      command: 'recover',
+      action: 'recoverprog',
+      fields: ['actor', ['program_id', 'uint64']],
+      signerField: 'actor',
+    },
+    {
+      command: 'reclaim-credit',
+      action: 'reclaimcred',
+      fields: ['owner', ['program_id', 'uint64']],
+      signerField: 'owner',
+    },
+    {
+      command: 'admit-tier',
+      action: 'admintier',
+      fields: ['owner', ['program_id', 'uint64'], ['model_id', 'uint64']],
+      signerField: 'owner',
+    },
+    {
+      command: 'migrate-serving',
+      action: 'migserving',
+      fields: [['max_rows', 'number']],
     },
   ]))
 
@@ -2736,16 +2999,33 @@ export function createAiCommand(): Command {
     {
       command: 'subscribe',
       action: 'subscribe',
-      fields: ['provider', ['program_id', 'number'], ['roles', 'number'], ['max_compute_class', 'number'], ['capacity_units', 'number'], 'bond', ['expires_sec', 'number'], 'metadata'],
+      fields: ['provider', ['program_id', 'uint64'], ['roles', 'number'], ['max_compute_class', 'number'], ['capacity_units', 'uint64'], 'bond', ['expires_sec', 'number'], 'metadata'],
       signerField: 'provider',
     },
-    {command: 'unsubscribe', action: 'unsub', fields: ['provider', ['subscription_id', 'number']], signerField: 'provider'},
+    {command: 'unsubscribe', action: 'unsub', fields: ['provider', ['subscription_id', 'uint64']], signerField: 'provider'},
+    {
+      command: 'clean-subscriptions',
+      action: 'cleansubs',
+      fields: ['provider', ['start_id', 'uint64'], ['max_rows', 'number']],
+      signerField: 'provider',
+    },
+    {
+      command: 'seed-training-contribution',
+      action: 'seedtraincon',
+      fields: [['submission_id', 'uint64'], ['model_id', 'uint64']],
+    },
+    {
+      command: 'seed-inference-contribution',
+      action: 'seedinfercon',
+      fields: [['deployment_id', 'uint64']],
+      disabledReason: DISABLED_INFERENCE_SEED,
+    },
     {
       command: 'deploy',
       action: 'setdeploy',
       fields: [
-        'provider', ['deployment_id', 'number'], ['model_id', 'number'], ['program_id', 'number'], ['active', 'boolean'],
-        'input_price_million', 'output_price_million', 'min_fee', ['capacity_tokens_min', 'number'],
+        'provider', ['deployment_id', 'uint64'], ['model_id', 'uint64'], ['program_id', 'uint64'], ['active', 'boolean'],
+        'input_price_million', 'output_price_million', 'min_fee', ['capacity_tokens_min', 'uint64'],
         ['p95_latency_ms', 'number'], 'metadata',
       ],
       signerField: 'provider',
@@ -2754,12 +3034,37 @@ export function createAiCommand(): Command {
       command: 'configure-deployment',
       action: 'setdepcfg',
       fields: [
-        'provider', ['deployment_id', 'number'], ['execution_mode', 'number'],
-        ['source_model_id', 'number'], ['topology_artifact_id', 'number'], ['node_count', 'number'],
-        ['aggregate_memory_mb', 'number'], ['min_node_memory_mb', 'number'], ['interconnect', 'number'],
+        'provider', ['deployment_id', 'uint64'], ['execution_mode', 'number'],
+        ['source_model_id', 'uint64'], ['topology_artifact_id', 'uint64'], ['node_count', 'number'],
+        ['aggregate_memory_mb', 'uint64'], ['min_node_memory_mb', 'uint64'], ['interconnect', 'number'],
         'sharding_hash', 'runtime_hash', ['validated_context_tokens', 'number'], 'metadata',
       ],
       signerField: 'provider',
+    },
+    {
+      command: 'set-signal-capabilities',
+      action: 'setdepcaps',
+      fields: [
+        'provider', ['deployment_id', 'uint64'], ['signals', 'number'], ['max_top_k', 'number'],
+        'tokenizer_hash', 'runtime_hash', 'signal_schema_hash', 'attestation_hash', 'metadata',
+      ],
+      signerField: 'provider',
+    },
+    {
+      command: 'bind-deployment-access',
+      action: 'binddepacc',
+      fields: [
+        'provider', ['deployment_id', 'uint64'], 'vault_contract',
+        ['vault_receipt_id', 'uint64'], ['vault_grant_id', 'uint64'],
+        ['vault_use_id', 'uint64'], 'purpose_hash', 'use_hash',
+      ],
+      signerField: 'provider',
+    },
+    {
+      command: 'prune-deployment',
+      action: 'prunedeploy',
+      fields: ['actor', ['deployment_id', 'uint64']],
+      signerField: 'actor',
     },
   ]))
 
@@ -2767,29 +3072,31 @@ export function createAiCommand(): Command {
     {
       command: 'propose',
       action: 'proptune',
-      fields: ['proposer', ['base_model_id', 'number'], ['dataset_artifact_id', 'number'], ['eval_artifact_id', 'number'], 'title', 'metadata', ['expires_sec', 'number']],
+      fields: ['proposer', ['base_model_id', 'uint64'], ['dataset_artifact_id', 'uint64'], ['eval_artifact_id', 'uint64'], 'title', 'metadata', ['expires_sec', 'number']],
       signerField: 'proposer',
     },
     {
       command: 'request',
       action: 'proptune',
-      fields: ['proposer', ['base_model_id', 'number'], ['dataset_artifact_id', 'number'], ['eval_artifact_id', 'number'], 'title', 'metadata', ['expires_sec', 'number']],
+      fields: ['proposer', ['base_model_id', 'uint64'], ['dataset_artifact_id', 'uint64'], ['eval_artifact_id', 'uint64'], 'title', 'metadata', ['expires_sec', 'number']],
       signerField: 'proposer',
     },
-    {command: 'vote', action: 'votetune', fields: ['voter', ['tune_id', 'number'], ['approve', 'boolean'], 'quantity'], signerField: 'voter'},
-    {command: 'close', action: 'closetune', fields: [['tune_id', 'number']]},
-    {command: 'reclaim', action: 'reclaim', fields: ['voter', ['tune_id', 'number']], signerField: 'voter'},
+    {command: 'vote', action: 'votetune', fields: ['voter', ['tune_id', 'uint64'], ['approve', 'boolean'], 'quantity'], signerField: 'voter'},
+    {command: 'close', action: 'closetune', fields: [['tune_id', 'uint64']]},
+    {command: 'reclaim', action: 'reclaim', fields: ['voter', ['tune_id', 'uint64']], signerField: 'voter'},
     {
       command: 'contribute-data',
       action: 'contribdata',
-      fields: ['contributor', ['tune_id', 'number'], ['dataset_artifact_id', 'number'], ['reward_weight', 'number'], 'metadata'],
+      fields: ['contributor', ['tune_id', 'uint64'], ['dataset_artifact_id', 'uint64'], ['reward_weight', 'number'], 'metadata'],
       signerField: 'contributor',
+      disabledReason: DISABLED_DATA_CONTRIBUTION,
     },
     {
       command: 'reward-data',
       action: 'rewarddata',
-      fields: ['payer', ['tune_id', 'number'], 'reward', 'memo'],
+      fields: ['payer', ['tune_id', 'uint64'], 'reward', 'memo'],
       signerField: 'payer',
+      disabledReason: DISABLED_DATA_REWARD,
     },
   ])
   addTuneNeedsCommand(tune)
@@ -2801,7 +3108,7 @@ export function createAiCommand(): Command {
       command: 'open',
       action: 'openround',
       fields: [
-        'proposer', ['program_id', 'number'], ['target_compute_class', 'number'], 'min_demand',
+        'proposer', ['program_id', 'uint64'], ['target_compute_class', 'number'], 'min_demand',
         'training_budget', ['min_training_providers', 'number'], ['min_inference_providers', 'number'],
         ['min_quality_bps', 'number'], ['min_safety_bps', 'number'], ['nomination_sec', 'number'],
         ['voting_sec', 'number'], 'metadata',
@@ -2812,8 +3119,8 @@ export function createAiCommand(): Command {
       command: 'nominate',
       action: 'nominate',
       fields: [
-        'proposer', ['round_id', 'number'], ['base_model_id', 'number'], ['dataset_artifact_id', 'number'],
-        ['eval_artifact_id', 'number'], 'estimated_training_cost', 'estimated_input_price_million',
+        'proposer', ['round_id', 'uint64'], ['base_model_id', 'uint64'], ['dataset_artifact_id', 'uint64'],
+        ['eval_artifact_id', 'uint64'], 'estimated_training_cost', 'estimated_input_price_million',
         'estimated_output_price_million', 'title', 'metadata',
       ],
       signerField: 'proposer',
@@ -2821,60 +3128,152 @@ export function createAiCommand(): Command {
     {
       command: 'qualify',
       action: 'qualify',
-      fields: ['validator', ['candidate_id', 'number'], ['approve', 'boolean'], ['license_ok', 'boolean'], ['reproducible', 'boolean'], ['serving_ok', 'boolean'], 'report_hash'],
+      fields: ['validator', ['candidate_id', 'uint64'], ['approve', 'boolean'], ['license_ok', 'boolean'], ['reproducible', 'boolean'], ['serving_ok', 'boolean'], 'report_hash'],
       signerField: 'validator',
     },
     {
       command: 'score-bakeoff',
       action: 'scorebake',
-      fields: ['validator', ['candidate_id', 'number'], ['quality_bps', 'number'], ['blind_preference_bps', 'number'], ['safety_bps', 'number'], ['cost_efficiency_bps', 'number'], ['transfer_bps', 'number'], 'report_hash'],
+      fields: ['validator', ['candidate_id', 'uint64'], ['quality_bps', 'number'], ['blind_preference_bps', 'number'], ['safety_bps', 'number'], ['cost_efficiency_bps', 'number'], ['transfer_bps', 'number'], 'report_hash'],
       signerField: 'validator',
     },
     {
       command: 'commit-provider',
       action: 'commitcand',
-      fields: ['provider', ['candidate_id', 'number'], ['roles', 'number'], ['capacity_units', 'number'], 'quoted_cost', 'metadata'],
+      fields: ['provider', ['candidate_id', 'uint64'], ['roles', 'number'], ['capacity_units', 'uint64'], 'quoted_cost', 'metadata'],
       signerField: 'provider',
     },
-    {command: 'pledge-demand', action: 'pledgedemand', fields: ['supporter', ['candidate_id', 'number'], 'quantity'], signerField: 'supporter'},
-    {command: 'start-vote', action: 'startround', fields: [['round_id', 'number']]},
-    {command: 'vote-user', action: 'voteuser', fields: ['voter', ['round_id', 'number'], ['rankings', 'json']], signerField: 'voter'},
-    {command: 'vote-community', action: 'votecomm', fields: ['voter', ['round_id', 'number'], ['rankings', 'json'], 'quantity'], signerField: 'voter'},
-    {command: 'close', action: 'closeround', fields: [['round_id', 'number']]},
-    {command: 'settle-demand', action: 'settledem', fields: ['supporter', ['round_id', 'number']], signerField: 'supporter'},
-    {command: 'reclaim-vote', action: 'reclaimvote', fields: ['voter', ['round_id', 'number']], signerField: 'voter'},
-    {command: 'claim-round', action: 'claimround', fields: ['proposer', ['round_id', 'number']], signerField: 'proposer'},
+    {command: 'pledge-demand', action: 'pledgedemand', fields: ['supporter', ['candidate_id', 'uint64'], 'quantity'], signerField: 'supporter'},
+    {command: 'start-vote', action: 'startround', fields: [['round_id', 'uint64']]},
+    {command: 'expire', action: 'expireround', fields: [['round_id', 'uint64']]},
+    {command: 'vote-user', action: 'voteuser', fields: ['voter', ['round_id', 'uint64'], ['rankings', 'uint64[]']], signerField: 'voter'},
+    {command: 'vote-community', action: 'votecomm', fields: ['voter', ['round_id', 'uint64'], ['rankings', 'uint64[]'], 'quantity'], signerField: 'voter'},
+    {command: 'close', action: 'closeround', fields: [['round_id', 'uint64']]},
+    {command: 'settle-demand', action: 'settledem', fields: ['supporter', ['round_id', 'uint64']], signerField: 'supporter'},
+    {command: 'reclaim-vote', action: 'reclaimvote', fields: ['voter', ['round_id', 'uint64']], signerField: 'voter'},
+    {command: 'claim-round', action: 'claimround', fields: ['proposer', ['round_id', 'uint64']], signerField: 'proposer'},
     {
       command: 'add-milestone',
       action: 'addmile',
-      fields: ['proposer', ['candidate_id', 'number'], 'payee', 'amount', 'title', 'metadata'],
+      fields: ['proposer', ['candidate_id', 'uint64'], 'payee', 'amount', 'title', 'metadata'],
       signerField: 'proposer',
     },
-    {command: 'approve-milestone', action: 'approvemile', fields: ['validator', ['milestone_id', 'number'], 'report_hash'], signerField: 'validator'},
-    {command: 'release-milestone', action: 'releasemile', fields: [['milestone_id', 'number'], 'evidence_hash']},
-    {command: 'start-training', action: 'startpromo', fields: ['creator', ['round_id', 'number'], ['max_submissions', 'number'], 'metadata', ['expires_sec', 'number']], signerField: 'creator'},
+    {command: 'approve-milestone', action: 'approvemile', fields: ['validator', ['milestone_id', 'uint64'], 'report_hash'], signerField: 'validator'},
+    {command: 'release-milestone', action: 'releasemile', fields: [['milestone_id', 'uint64'], 'evidence_hash']},
+    {
+      command: 'adjudicate-milestone',
+      action: 'adjudmile',
+      fields: [['milestone_id', 'uint64'], ['honor', 'boolean'], 'decision_hash'],
+    },
+    {command: 'start-training', action: 'startpromo', fields: ['creator', ['round_id', 'uint64'], ['max_submissions', 'number'], 'metadata', ['expires_sec', 'number']], signerField: 'creator'},
+    {
+      command: 'attest-canary',
+      action: 'attestpromo',
+      fields: ['router', ['round_id', 'uint64'], ['infer_id', 'uint64'], ['svc_check_id', 'uint64']],
+      signerField: 'router',
+    },
+    {command: 'launch', action: 'launchpromo', fields: ['owner', ['round_id', 'uint64']], signerField: 'owner'},
+    {command: 'expire-execution', action: 'expirepromo', fields: [['round_id', 'uint64']]},
+    {command: 'migrate-stages', action: 'migpromos', fields: [['max_rows', 'number']]},
+    {
+      command: 'migrate-funding',
+      action: 'migpromfund',
+      fields: [['round_id', 'uint64'], ['max_rows', 'number']],
+    },
+    {command: 'migrate-active-rounds', action: 'migactpromo', fields: [['max_rows', 'number']]},
+    {
+      command: 'clean-round',
+      action: 'cleanpromo',
+      fields: [['round_id', 'uint64'], ['max_rows', 'number']],
+    },
+  ]))
+
+  ai.addCommand(group('attestation', 'Challenge and settle bonded AI attestations', [
+    {
+      command: 'configure',
+      action: 'setattestcfg',
+      fields: [['challenge_sec', 'number'], ['resolution_sec', 'number']],
+    },
+    {
+      command: 'challenge',
+      action: 'challattest',
+      fields: [
+        'challenger', ['kind', 'number'], ['subject_id', 'uint64'],
+        'challenge_hash',
+      ],
+      signerField: 'challenger',
+    },
+    {
+      command: 'resolve',
+      action: 'resolveatt',
+      fields: [
+        ['kind', 'number'], ['subject_id', 'uint64'], ['uphold', 'boolean'],
+        'decision_hash',
+      ],
+    },
+    {
+      command: 'settle',
+      action: 'settleattest',
+      fields: [['kind', 'number'], ['subject_id', 'uint64']],
+    },
+    {
+      command: 'expire',
+      action: 'expireattest',
+      fields: [['kind', 'number'], ['subject_id', 'uint64']],
+    },
+  ]))
+
+  ai.addCommand(group('treasury', 'Govern protocol-retained AI signal funds', [
+    {
+      command: 'spend-signal',
+      action: 'spendsignal',
+      fields: [
+        'recipient', 'inference_quantity', 'demand_quantity',
+        'purpose_hash', 'memo',
+      ],
+    },
   ]))
 
   ai.addCommand(group('train', 'Run Harbor AI training job lifecycle actions', [
     {
       command: 'start',
       action: 'starttrain',
-      fields: ['creator', ['tune_id', 'number'], ['base_model_id', 'number'], ['dataset_artifact_id', 'number'], 'reward', ['max_submissions', 'number'], 'metadata', ['expires_sec', 'number']],
+      fields: ['creator', ['tune_id', 'uint64'], ['base_model_id', 'uint64'], ['dataset_artifact_id', 'uint64'], 'reward', ['max_submissions', 'number'], 'metadata', ['expires_sec', 'number']],
       signerField: 'creator',
     },
     {
       command: 'submit',
       action: 'submittrain',
-      fields: ['trainer', ['train_id', 'number'], ['weights_artifact_id', 'number'], 'metrics_hash', 'metadata'],
+      fields: ['trainer', ['train_id', 'uint64'], ['weights_artifact_id', 'uint64'], 'metrics_hash', 'metadata'],
+      signerField: 'trainer',
+    },
+    {
+      command: 'attest-lineage',
+      action: 'attestline',
+      fields: [
+        'trainer', ['submission_id', 'uint64'], ['output_object_id', 'uint64'],
+        ['output_policy_id', 'uint64'], 'output_lineage_hash', 'attestation_hash',
+      ],
       signerField: 'trainer',
     },
     {
       command: 'score',
       action: 'scoretrain',
-      fields: ['validator', ['submission_id', 'number'], ['score', 'number'], 'report_hash'],
+      fields: ['validator', ['submission_id', 'uint64'], ['score', 'number'], 'report_hash'],
       signerField: 'validator',
     },
-    {command: 'settle', action: 'settletrain', fields: [['train_id', 'number']]},
+    {command: 'settle', action: 'settletrain', fields: [['train_id', 'uint64']]},
+    {
+      command: 'cancel',
+      action: 'canceltrain',
+      fields: ['actor', ['train_id', 'uint64']],
+      signerField: 'actor',
+    },
+    {
+      command: 'clean',
+      action: 'cleantrain',
+      fields: [['train_id', 'uint64'], ['max_rows', 'number']],
+    },
   ]))
 
   ai.addCommand(group('distill', 'Run consented, batched specialist distillation campaigns', [
@@ -2882,76 +3281,223 @@ export function createAiCommand(): Command {
       command: 'open',
       action: 'opendistill',
       fields: [
-        'owner', ['program_id', 'number'], ['tune_id', 'number'], ['teacher_model_id', 'number'],
+        'owner', ['program_id', 'uint64'], ['tune_id', 'uint64'], ['teacher_model_id', 'uint64'],
         ['required_scopes', 'number'], ['discount_bps', 'number'], 'max_discount_per_infer',
         'discount_fund', ['min_batch_samples', 'number'], ['max_batch_samples', 'number'],
         ['min_quality_bps', 'number'], ['min_safety_bps', 'number'], ['min_transfer_bps', 'number'],
-        ['min_canary_requests', 'number'], ['min_canary_success_bps', 'number'],
+        ['min_canary_requests', 'uint64'], ['min_canary_success_bps', 'number'],
         'title', 'metadata',
       ],
       signerField: 'owner',
     },
-    {command: 'fund', action: 'funddistill', fields: ['payer', ['campaign_id', 'number'], 'quantity'], signerField: 'payer'},
-    {command: 'close', action: 'closedistill', fields: ['owner', ['campaign_id', 'number']], signerField: 'owner'},
-    {command: 'claim', action: 'claimdistill', fields: ['owner', ['campaign_id', 'number'], 'quantity'], signerField: 'owner'},
-    {command: 'consent', action: 'setconsent', fields: ['user', ['campaign_id', 'number'], ['scopes', 'number'], ['expires_sec', 'number']], signerField: 'user'},
-    {command: 'revoke-consent', action: 'revokecons', fields: ['user', ['program_id', 'number']], signerField: 'user'},
-    {command: 'opt-in', action: 'optindata', fields: ['user', ['infer_id', 'number'], ['campaign_id', 'number']], signerField: 'user'},
-    {command: 'open-batch', action: 'openbatch', fields: ['owner', ['campaign_id', 'number'], 'curator', 'metadata'], signerField: 'owner'},
-    {command: 'add-sample', action: 'addsample', fields: ['curator', ['batch_id', 'number'], ['infer_id', 'number'], 'evidence_hash'], signerField: 'curator'},
-    {command: 'cancel-batch', action: 'cancelbatch', fields: ['actor', ['batch_id', 'number']], signerField: 'actor'},
-    {command: 'seal-batch', action: 'sealbatch', fields: ['curator', ['batch_id', 'number'], ['dataset_artifact_id', 'number']], signerField: 'curator'},
+    {command: 'fund', action: 'funddistill', fields: ['payer', ['campaign_id', 'uint64'], 'quantity'], signerField: 'payer'},
+    {
+      command: 'set-protocol',
+      action: 'setdistproto',
+      fields: [
+        'owner', ['campaign_id', 'uint64'], 'vault_contract', ['raw_policy_id', 'uint64'],
+        ['sanitized_policy_id', 'uint64'], ['required_signals', 'number'], ['min_top_k', 'number'],
+        ['review_quorum', 'number'], ['approval_quorum', 'number'], ['sample_ttl_sec', 'number'],
+        'user_admission_reward', 'provider_admission_reward', 'promotion_reward', 'metadata',
+      ],
+      signerField: 'owner',
+    },
+    {
+      command: 'set-token-translation',
+      action: 'setdisttok',
+      fields: [
+        'owner', ['campaign_id', 'uint64'], ['translation_artifact_id', 'uint64'],
+        ['translation_version', 'number'],
+      ],
+      signerField: 'owner',
+    },
+    {command: 'fund-sample-rewards', action: 'fundsamprwd', fields: ['payer', ['campaign_id', 'uint64'], 'quantity'], signerField: 'payer'},
+    {command: 'close', action: 'closedistill', fields: ['owner', ['campaign_id', 'uint64']], signerField: 'owner'},
+    {command: 'claim', action: 'claimdistill', fields: ['owner', ['campaign_id', 'uint64'], 'quantity'], signerField: 'owner'},
+    {command: 'claim-sample-pool', action: 'claimsampool', fields: ['owner', ['campaign_id', 'uint64'], 'quantity'], signerField: 'owner'},
+    {command: 'migrate-batches', action: 'migbatches', fields: [['max_rows', 'number']]},
+    {command: 'clean-batch', action: 'cleanbatch', fields: [['batch_id', 'uint64'], ['max_rows', 'number']]},
+    {command: 'consent', action: 'setconsent', fields: ['user', ['campaign_id', 'uint64'], ['scopes', 'number'], ['expires_sec', 'number']], signerField: 'user'},
+    {command: 'revoke-consent', action: 'revokecons', fields: ['user', ['program_id', 'uint64']], signerField: 'user'},
+    {command: 'opt-in', action: 'optindata', fields: ['user', ['infer_id', 'uint64'], ['campaign_id', 'uint64']], signerField: 'user'},
+    {
+      command: 'bind-data-consent',
+      action: 'binddatacons',
+      fields: ['user', ['infer_id', 'uint64'], ['vault_consent_id', 'uint64']],
+      signerField: 'user',
+    },
+    {
+      command: 'commit-sample',
+      action: 'commitsample',
+      fields: [
+        'provider', ['infer_id', 'uint64'], ['signals', 'number'], ['top_k', 'number'],
+        'envelope_hash', 'signal_hash', 'tail_mass_hash', ['vault_object_id', 'uint64'],
+        ['vault_policy_id', 'uint64'], ['vault_consent_id', 'uint64'],
+        ['vault_receipt_id', 'uint64'], ['review_grant_id', 'uint64'], 'vault_object_hash',
+        'key_envelope_hash', ['svc_check_id', 'uint64'], ['expires_sec', 'number'], 'metadata',
+      ],
+      signerField: 'provider',
+    },
+    {
+      command: 'review-sample',
+      action: 'reviewsample',
+      fields: [
+        'validator', ['infer_id', 'uint64'], ['approve', 'boolean'],
+        ['structure_ok', 'boolean'], ['replay_ok', 'boolean'], ['rights_ok', 'boolean'],
+        ['privacy_ok', 'boolean'], ['review_grant_id', 'uint64'],
+        ['svc_check_id', 'uint64'], 'report_hash',
+      ],
+      signerField: 'validator',
+    },
+    {command: 'resolve-sample', action: 'resolvesamp', fields: [['infer_id', 'uint64']]},
+    {command: 'expire-sample', action: 'expiresample', fields: [['infer_id', 'uint64']]},
+    {command: 'expire-data', action: 'expiredata', fields: ['actor', ['infer_id', 'uint64']], signerField: 'actor'},
+    {command: 'claim-sample-reward', action: 'claimsreward', fields: ['actor', ['infer_id', 'uint64']], signerField: 'actor'},
+    {command: 'open-batch', action: 'openbatch', fields: ['owner', ['campaign_id', 'uint64'], 'curator', 'metadata'], signerField: 'owner'},
+    {command: 'add-sample', action: 'addsample', fields: ['curator', ['batch_id', 'uint64'], ['infer_id', 'uint64'], 'evidence_hash'], signerField: 'curator'},
+    {command: 'withdraw-sample', action: 'withdrawsamp', fields: ['requester', ['infer_id', 'uint64']], signerField: 'requester'},
+    {command: 'cancel-batch', action: 'cancelbatch', fields: ['actor', ['batch_id', 'uint64']], signerField: 'actor'},
+    {command: 'expire-batch', action: 'expirebatch', fields: [['batch_id', 'uint64']]},
+    {
+      command: 'set-batch-spec',
+      action: 'setbatchspec',
+      fields: [
+        'curator', ['batch_id', 'uint64'], ['dataset_object_id', 'uint64'],
+        ['dataset_policy_id', 'uint64'], ['transform_id', 'uint64'],
+        ['recipe_artifact_id', 'uint64'], 'dataset_hash', 'input_lineage_hash',
+        'recipe_hash', 'metadata',
+      ],
+      signerField: 'curator',
+    },
+    {command: 'seal-batch', action: 'sealbatch', fields: ['curator', ['batch_id', 'uint64'], ['dataset_artifact_id', 'uint64']], signerField: 'curator'},
+    {
+      command: 'grant-batch',
+      action: 'grantbatch',
+      fields: [
+        'actor', ['batch_id', 'uint64'], 'processor', ['vault_grant_id', 'uint64'],
+        ['vault_policy_id', 'uint64'], 'purpose_hash', ['max_uses', 'number'],
+        ['expires_sec', 'number'],
+      ],
+      signerField: 'actor',
+    },
+    {
+      command: 'revoke-batch-grant',
+      action: 'revokebgrant',
+      fields: ['actor', ['batch_id', 'uint64'], 'processor'],
+      signerField: 'actor',
+    },
     {
       command: 'start-batch',
       action: 'startdistill',
-      fields: ['creator', ['batch_id', 'number'], 'reward', ['max_submissions', 'number'], 'metadata', ['expires_sec', 'number']],
+      fields: ['creator', ['batch_id', 'uint64'], 'reward', ['max_submissions', 'number'], 'metadata', ['expires_sec', 'number']],
       signerField: 'creator',
     },
     {
       command: 'score-batch',
       action: 'scorebatch',
-      fields: ['validator', ['batch_id', 'number'], ['quality_bps', 'number'], ['safety_bps', 'number'], ['transfer_bps', 'number'], 'report_hash'],
+      fields: ['validator', ['batch_id', 'uint64'], ['quality_bps', 'number'], ['safety_bps', 'number'], ['transfer_bps', 'number'], 'report_hash'],
       signerField: 'validator',
+    },
+    {
+      command: 'plan-canary',
+      action: 'plancanary',
+      fields: ['owner', ['batch_id', 'uint64'], 'router', ['max_requests', 'number']],
+      signerField: 'owner',
+    },
+    {
+      command: 'record-canary',
+      action: 'recordcanary',
+      fields: [
+        'router', ['batch_id', 'uint64'], ['infer_id', 'uint64'], ['route_log_id', 'uint64'],
+        ['svc_check_id', 'uint64'], ['success', 'boolean'], 'evidence_hash',
+      ],
+      signerField: 'router',
     },
     {
       command: 'report-canary',
       action: 'reportcanary',
-      fields: ['router', ['batch_id', 'number'], ['request_count', 'number'], ['success_count', 'number'], 'evidence_hash'],
+      fields: ['router', ['batch_id', 'uint64'], ['request_count', 'number'], ['success_count', 'number'], 'evidence_hash'],
       signerField: 'router',
     },
-    {command: 'promote-batch', action: 'promotebatch', fields: ['owner', ['batch_id', 'number']], signerField: 'owner'},
+    {command: 'promote-batch', action: 'promotebatch', fields: ['owner', ['batch_id', 'uint64']], signerField: 'owner'},
   ]))
 
   ai.addCommand(group('infer', 'Request and settle Harbor AI inference jobs', [
     {
       command: 'request',
       action: 'reqinfer',
-      fields: ['requester', ['model_id', 'number'], 'prompt_hash', ['max_input_tokens', 'number'], ['max_output_tokens', 'number'], 'max_fee', 'metadata'],
+      fields: ['requester', ['model_id', 'uint64'], 'prompt_hash', ['max_input_tokens', 'number'], ['max_output_tokens', 'number'], 'max_fee', 'metadata'],
+      signerField: 'requester',
+    },
+    {
+      command: 'assign-exact',
+      action: 'assignexact',
+      fields: ['requester', ['infer_id', 'uint64'], 'provider'],
+      signerField: 'requester',
+    },
+    {
+      command: 'commit-seed',
+      action: 'commitseed',
+      fields: ['requester', ['infer_id', 'uint64'], 'seed_commitment'],
       signerField: 'requester',
     },
     {
       command: 'complete',
       action: 'completeinf',
-      fields: ['provider', ['infer_id', 'number'], 'result_hash', ['input_tokens', 'number'], ['output_tokens', 'number'], 'fee', 'metadata'],
+      fields: ['provider', ['infer_id', 'uint64'], 'result_hash', ['input_tokens', 'number'], ['output_tokens', 'number'], 'fee', 'metadata'],
       signerField: 'provider',
     },
-    {command: 'fail', action: 'failjob', fields: ['actor', ['infer_id', 'number'], 'reason_hash', 'metadata'], signerField: 'actor'},
-    {command: 'cancel', action: 'canceljob', fields: ['requester', ['infer_id', 'number']], signerField: 'requester'},
+    {
+      command: 'accept',
+      action: 'acceptinfer',
+      fields: ['provider', ['infer_id', 'uint64'], 'start_hash'],
+      signerField: 'provider',
+    },
+    {
+      command: 'acknowledge',
+      action: 'ackinfer',
+      fields: ['requester', ['infer_id', 'uint64'], 'acceptance_hash'],
+      signerField: 'requester',
+    },
+    {
+      command: 'settle',
+      action: 'settleinf',
+      fields: ['actor', ['infer_id', 'uint64'], ['svc_check_id', 'uint64']],
+      signerField: 'actor',
+    },
+    {
+      command: 'challenge',
+      action: 'challenginf',
+      fields: [
+        'requester', ['infer_id', 'uint64'], ['svc_check_id', 'uint64'],
+        'evidence_hash', 'selection_reveal',
+      ],
+      signerField: 'requester',
+    },
+    {
+      command: 'resolve',
+      action: 'resolveinf',
+      fields: ['actor', ['infer_id', 'uint64'], ['svc_check_id', 'uint64']],
+      signerField: 'actor',
+    },
+    {command: 'fail', action: 'failjob', fields: ['actor', ['infer_id', 'uint64'], 'reason_hash', 'metadata'], signerField: 'actor'},
+    {command: 'cancel', action: 'canceljob', fields: ['requester', ['infer_id', 'uint64']], signerField: 'requester'},
+    {command: 'expire', action: 'expireinfer', fields: ['actor', ['infer_id', 'uint64']], signerField: 'actor'},
   ]))
 
   ai.addCommand(group('session', 'Create session-affine routed inference for preserved model history', [
     {
       command: 'open',
       action: 'opensess',
-      fields: ['requester', ['program_id', 'number'], ['preserve_thinking_history', 'boolean'], ['expires_sec', 'number'], 'metadata'],
+      fields: ['requester', ['program_id', 'uint64'], ['preserve_thinking_history', 'boolean'], ['expires_sec', 'number'], 'metadata'],
       signerField: 'requester',
     },
-    {command: 'close', action: 'closesess', fields: ['requester', ['session_id', 'number']], signerField: 'requester'},
+    {command: 'close', action: 'closesess', fields: ['requester', ['session_id', 'uint64']], signerField: 'requester'},
     {
       command: 'request',
       action: 'reqsession',
       fields: [
-        'requester', ['session_id', 'number'], ['min_compute_class', 'number'], ['max_compute_class', 'number'],
+        'requester', ['session_id', 'uint64'], ['min_compute_class', 'number'], ['max_compute_class', 'number'],
         ['routing_policy', 'number'], 'prompt_hash', ['max_input_tokens', 'number'], ['max_output_tokens', 'number'],
         'max_fee', ['max_latency_ms', 'number'], ['allow_escalation', 'boolean'], 'metadata',
       ],
@@ -2964,7 +3510,7 @@ export function createAiCommand(): Command {
       command: 'request',
       action: 'reqroute',
       fields: [
-        'requester', ['program_id', 'number'], ['min_compute_class', 'number'], ['max_compute_class', 'number'],
+        'requester', ['program_id', 'uint64'], ['min_compute_class', 'number'], ['max_compute_class', 'number'],
         ['routing_policy', 'number'], 'prompt_hash', ['max_input_tokens', 'number'], ['max_output_tokens', 'number'],
         'max_fee', ['max_latency_ms', 'number'], ['allow_escalation', 'boolean'], 'metadata',
       ],
@@ -2973,26 +3519,26 @@ export function createAiCommand(): Command {
     {
       command: 'quote',
       action: 'quoteinfer',
-      fields: ['router', ['infer_id', 'number'], ['deployment_id', 'number'], 'max_fee', ['expires_sec', 'number'], 'reason_hash', 'metadata'],
+      fields: ['router', ['infer_id', 'uint64'], ['deployment_id', 'uint64'], 'max_fee', ['expires_sec', 'number'], 'reason_hash', 'metadata'],
       signerField: 'router',
     },
-    {command: 'assign', action: 'assigninfer', fields: ['router', ['infer_id', 'number'], ['quote_id', 'number']], signerField: 'router'},
+    {command: 'assign', action: 'assigninfer', fields: ['router', ['infer_id', 'uint64'], ['quote_id', 'uint64']], signerField: 'router'},
     {
       command: 'policy',
       action: 'setroutepol',
-      fields: ['owner', ['policy_id', 'number'], ['default_model_id', 'number'], ['classifier_model_id', 'number'], ['token_interval', 'number'], 'metadata'],
+      fields: ['owner', ['policy_id', 'uint64'], ['default_model_id', 'uint64'], ['classifier_model_id', 'uint64'], ['token_interval', 'number'], 'metadata'],
       signerField: 'owner',
     },
     {
       command: 'log',
       action: 'logroute',
-      fields: ['router', ['policy_id', 'number'], ['infer_id', 'number'], 'request_hash', ['selected_model_id', 'number'], ['token_start', 'number'], ['token_end', 'number'], ['classifier_model_id', 'number'], ['confidence_bps', 'number'], 'metadata'],
+      fields: ['router', ['policy_id', 'uint64'], ['infer_id', 'uint64'], 'request_hash', ['selected_model_id', 'uint64'], ['token_start', 'number'], ['token_end', 'number'], ['classifier_model_id', 'uint64'], ['confidence_bps', 'number'], 'metadata'],
       signerField: 'router',
     },
     {
       command: 'subcall',
       action: 'logsubcall',
-      fields: ['caller', ['parent_infer_id', 'number'], ['from_model_id', 'number'], ['to_model_id', 'number'], 'call_hash', ['token_start', 'number'], ['token_end', 'number'], 'metadata'],
+      fields: ['caller', ['parent_infer_id', 'uint64'], ['from_model_id', 'uint64'], ['to_model_id', 'uint64'], 'call_hash', ['token_start', 'number'], ['token_end', 'number'], 'metadata'],
       signerField: 'caller',
     },
   ]))

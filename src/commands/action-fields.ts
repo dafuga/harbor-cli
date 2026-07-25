@@ -1,7 +1,8 @@
 import {Command} from 'commander'
 import {addTxOptions, pushJsonAction} from './action.js'
+import {canonicalUint64} from '../lib/tx.js'
 
-export type FieldType = 'string' | 'number' | 'boolean' | 'json'
+export type FieldType = 'string' | 'number' | 'uint64' | 'uint64[]' | 'boolean' | 'json'
 export type Field = string | [string, FieldType]
 
 export interface JsonActionSpec {
@@ -9,22 +10,52 @@ export interface JsonActionSpec {
   action: string
   fields: Field[]
   signerField?: string
+  disabledReason?: string
+}
+
+const commandSpecs = new WeakMap<Command, JsonActionSpec>()
+
+export function jsonActionSpec(command: Command): JsonActionSpec | undefined {
+  return commandSpecs.get(command)
+}
+
+export function collectJsonActionSpecs(root: Command): JsonActionSpec[] {
+  const result: JsonActionSpec[] = []
+  const visit = (command: Command): void => {
+    const spec = commandSpecs.get(command)
+    if (spec) result.push(spec)
+    command.commands.forEach(visit)
+  }
+  visit(root)
+  return result
 }
 
 export function fieldName(field: Field): string {
   return Array.isArray(field) ? field[0] : field
 }
 
-function fieldType(field: Field): FieldType {
+export function fieldType(field: Field): FieldType {
   return Array.isArray(field) ? field[1] : 'string'
 }
 
-function parseField(value: string, type: FieldType): unknown {
+export function parseField(value: string, type: FieldType): unknown {
   if (type === 'number') {
     return Number(value)
   }
+  if (type === 'uint64') {
+    return canonicalUint64(value)
+  }
+  if (type === 'uint64[]') {
+    const parsed = JSON.parse(value) as unknown
+    if (!Array.isArray(parsed)) {
+      throw new Error('uint64[] must be a JSON array')
+    }
+    return parsed.map((item, index) => canonicalUint64(item, `uint64[${index}]`))
+  }
   if (type === 'boolean') {
-    return value === 'true' || value === '1'
+    if (value === 'true' || value === '1') return true
+    if (value === 'false' || value === '0') return false
+    throw new Error('boolean must be one of true, 1, false, or 0')
   }
   if (type === 'json') {
     return JSON.parse(value)
@@ -56,12 +87,20 @@ export function actionOptions(args: unknown[]): Record<string, string | boolean 
 
 export function addJsonActionCommand(root: Command, contractOption: string, spec: JsonActionSpec): void {
   let cmd = root.command(spec.command)
-  cmd.description(`Push ${spec.action}`)
+  commandSpecs.set(cmd, spec)
+  cmd.description(
+    spec.disabledReason
+      ? `Compatibility-disabled ABI action ${spec.action}: ${spec.disabledReason}`
+      : `Push ${spec.action}`
+  )
   for (const field of spec.fields) {
     cmd = cmd.argument(`<${fieldName(field)}>`)
   }
   cmd.option('-c, --contract <account>', 'contract account', contractOption)
   addTxOptions(cmd).action(async (...args: unknown[]) => {
+    if (spec.disabledReason) {
+      throw new Error(`${spec.action} is compatibility-disabled: ${spec.disabledReason}`)
+    }
     const options = actionOptions(args)
     const data = buildActionData(spec.fields, args.slice(0, -1) as string[])
     const signer = spec.signerField ? String(data[spec.signerField]) : undefined

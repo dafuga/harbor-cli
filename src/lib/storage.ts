@@ -1,11 +1,28 @@
 import crypto from 'node:crypto'
 import {spawn} from 'node:child_process'
+import {createReadStream} from 'node:fs'
 import fs from 'node:fs/promises'
 import http from 'node:http'
 import os from 'node:os'
 import path from 'node:path'
-import {getTableRows, pushAction} from './tx.js'
+import {
+  actionUint64Return,
+  canonicalUint64,
+  getAllTableRows,
+  getTableRows,
+  pushAction,
+  readContractNextId,
+} from './tx.js'
 import type {AuthOptions} from './tx.js'
+import {
+  encryptVaultBytes,
+  GovernedDataContext,
+  MAX_GOVERNED_PLAINTEXT_BYTES,
+  VaultRecipient,
+  requireInitialCustodyEnvelope,
+  vaultEnvelopeCommitment,
+  vaultEnvelopeToBytes,
+} from './vault-crypto.js'
 
 export interface StorageManifestEntry {
   path: string
@@ -18,7 +35,16 @@ export interface StoreObjectOptions {
   file: string
   encrypt?: boolean
   privateKey?: string
+  governed?: GovernedStorageEncryption
   metadata?: string
+}
+
+export interface GovernedStorageEncryption {
+  recipientPublicKey: Buffer
+  context: GovernedDataContext
+  recipient: VaultRecipient
+  keyCustodians: string[]
+  now?: number
 }
 
 export interface PreparedStorageObject {
@@ -29,7 +55,17 @@ export interface PreparedStorageObject {
   bytes: number
   encrypted: boolean
   encryptionKeyHash: string
+  temporary: boolean
+  ttlSec?: number
+  expiresAt?: number
+  keyCustodians: string[]
+  envelopeCommitment?: string
   metadata: string
+}
+
+export type PreparedUploadObject = Omit<PreparedStorageObject, 'storedBytes'> & {
+  storedBytes?: Buffer
+  uploadPath: string
 }
 
 export interface StoredObjectResult {
@@ -40,11 +76,16 @@ export interface StoredObjectResult {
   bytes: number
   encrypted: boolean
   encryptionKeyHash: string
+  temporary: boolean
+  ttlSec?: number
+  expiresAt?: number
+  keyCustodians: string[]
+  envelopeCommitment?: string
   metadata: string
   registerAction: {
     contract: string
     action: string
-    data: [string, string, number, boolean, string, string]
+    data: unknown[]
   }
 }
 
@@ -61,6 +102,20 @@ export interface MarketServiceRow {
   metadata?: string
 }
 
+export interface MarketProviderRow {
+  owner: string
+  stake: string
+  active: boolean | number | string
+  metadata?: string
+}
+
+export interface MarketServiceTypeRow {
+  id: number | string
+  enabled: boolean | number | string
+  min_provider_stake: string
+  [key: string]: unknown
+}
+
 export interface StorageObjectRow {
   id: number | string
   owner: string
@@ -69,7 +124,15 @@ export interface StorageObjectRow {
   encrypted: boolean | number | string
   encryption_key_hash: string
   required_replicas?: number | string
+  status: number | string
   metadata?: string
+}
+
+export interface StorageLifecycleRow {
+  object_id: number | string
+  expires_at: number | string
+  tombstoned_at: number | string
+  completed_at: number | string
 }
 
 export interface StorageReplicaRow {
@@ -97,18 +160,25 @@ export interface StorageDownloadResult {
   provider: Pick<MarketServiceRow, 'provider' | 'endpoint'>
 }
 
-export interface RouterUploadInput {
+interface RouterUploadIdentity {
   router: Pick<MarketServiceRow, 'id' | 'provider' | 'endpoint'>
-  objectId: number
+  objectId: number | string
   owner: string
   contentHash: string
-  bytes: Buffer
+  requiredReplicas: number | string
+  encrypted: boolean
+  encryptionKeyHash: string
 }
+
+export type RouterUploadInput = RouterUploadIdentity & (
+  | {bytes: Buffer; file?: never; byteLength?: never}
+  | {file: string; byteLength: number; bytes?: never}
+)
 
 export interface RouterDistributionResult {
   ok?: boolean
   content_hash?: string
-  object_id?: number
+  object_id?: string
   router?: string
   selected_storage_providers?: string[]
   replica_count?: number
@@ -123,6 +193,8 @@ export interface ReplicatedPutOptions extends AuthOptions {
   metadata?: string
   encrypt?: boolean
   privateKey?: string
+  governed?: GovernedStorageEncryption
+  preparedOutput?: string
   marketContract?: string
   storageContract?: string
   routerUrl?: string
@@ -134,6 +206,8 @@ export interface WalrusPutOptions extends AuthOptions {
   metadata?: string
   encrypt?: boolean
   privateKey?: string
+  governed?: GovernedStorageEncryption
+  preparedOutput?: string
   storageContract?: string
   walrusCommand?: string
   walrusPublisherUrl?: string
@@ -149,8 +223,15 @@ export interface ReplicatedPutResult {
   bytes: number
   encrypted: boolean
   encryption_key_hash: string
-  object_id: number
+  temporary: boolean
+  expires_in_sec?: number
+  expires_at?: number
+  key_custodians: string[]
+  envelope_commitment?: string
+  prepared_path?: string
+  object_id: string
   put_tx?: string
+  route_authorization_tx?: string
   router: Pick<MarketServiceRow, 'id' | 'provider' | 'endpoint'>
   selected_storage_providers: string[]
   replica_count: number
@@ -175,17 +256,23 @@ export interface WalrusPutResult {
   bytes: number
   encrypted: boolean
   encryption_key_hash: string
-  object_id: number
+  temporary: boolean
+  expires_in_sec?: number
+  expires_at?: number
+  key_custodians: string[]
+  envelope_commitment?: string
+  prepared_path?: string
+  object_id: string
   put_tx?: string
   metadata: string
   walrus: WalrusStoreRefs
 }
 
-async function hashFile(filePath: string): Promise<string> {
+export async function hashFile(filePath: string): Promise<string> {
   const hash = crypto.createHash('sha256')
   const handle = await fs.open(filePath, 'r')
   try {
-    for await (const chunk of handle.createReadStream()) {
+    for await (const chunk of handle.createReadStream({autoClose: false})) {
       hash.update(chunk)
     }
   } finally {
@@ -198,23 +285,79 @@ function sha256(bytes: Buffer | string): string {
   return crypto.createHash('sha256').update(bytes).digest('hex')
 }
 
-export function sha256Bytes(bytes: Buffer | string): string {
-  return sha256(bytes)
+const UINT64_MAX = (1n << 64n) - 1n
+const CHECKSUM256_MAX = (1n << 256n) - 1n
+
+function uint64ExclusiveUpper(value: unknown, label: string): string | undefined {
+  const canonical = canonicalUint64(value, label)
+  const parsed = BigInt(canonical)
+  return parsed === UINT64_MAX ? undefined : (parsed + 1n).toString()
 }
 
-function encryptBytes(bytes: Buffer, privateKey: string): Buffer {
-  const key = crypto.createHash('sha256').update(privateKey).digest()
-  const iv = crypto.randomBytes(12)
-  const cipher = crypto.createCipheriv('aes-256-gcm', key, iv)
-  const ciphertext = Buffer.concat([cipher.update(bytes), cipher.final()])
-  const tag = cipher.getAuthTag()
-  return Buffer.from(JSON.stringify({
-    version: 1,
-    algorithm: 'aes-256-gcm',
-    iv: iv.toString('base64'),
-    tag: tag.toString('base64'),
-    ciphertext: ciphertext.toString('base64'),
-  }))
+function compareUint64(left: unknown, right: unknown, label: string): number {
+  const lhs = BigInt(canonicalUint64(left, label))
+  const rhs = BigInt(canonicalUint64(right, label))
+  return lhs < rhs ? -1 : lhs > rhs ? 1 : 0
+}
+
+function checksum256ExclusiveUpper(value: string): string | undefined {
+  const parsed = BigInt(`0x${value}`)
+  return parsed === CHECKSUM256_MAX
+    ? undefined
+    : (parsed + 1n).toString(16).padStart(64, '0')
+}
+
+function antelopeTimePointSec(unixSeconds: number): string {
+  if (!Number.isSafeInteger(unixSeconds) || unixSeconds <= 0 || unixSeconds > 0xffff_ffff) {
+    throw new Error('time_point_sec is out of range')
+  }
+  return new Date(unixSeconds * 1000).toISOString().replace(/\.000Z$/, '')
+}
+
+export function storageRegistrationAction(
+  owner: string,
+  prepared: Omit<PreparedStorageObject, 'storedBytes'>,
+  metadata = prepared.metadata,
+): {action: 'putobject' | 'puttempat'; data: Record<string, unknown>} {
+  if (prepared.temporary) {
+    return {
+      action: 'puttempat',
+      data: {
+        owner,
+        content_hash: prepared.contentHash,
+        bytes: prepared.bytes,
+        encrypted: true,
+        encryption_key_hash: prepared.encryptionKeyHash,
+        expires_at: antelopeTimePointSec(prepared.expiresAt as number),
+        key_custodians: prepared.keyCustodians,
+        metadata,
+      },
+    }
+  }
+  return {
+    action: 'putobject',
+    data: {
+      owner,
+      content_hash: prepared.contentHash,
+      bytes: prepared.bytes,
+      encrypted: false,
+      encryption_key_hash: prepared.encryptionKeyHash,
+      metadata,
+    },
+  }
+}
+
+function preparedRecoveryError(error: unknown, preparedPath?: string): Error {
+  const cause = error instanceof Error ? error : new Error(String(error))
+  if (!preparedPath) return cause
+  return new Error(
+    `${cause.message}; exact governed envelope retained at ${preparedPath} for recovery`,
+    {cause},
+  )
+}
+
+export function sha256Bytes(bytes: Buffer | string): string {
+  return sha256(bytes)
 }
 
 function objectPath(root: string, contentHash: string): string {
@@ -318,18 +461,63 @@ async function runWalrusStore(file: string, options: WalrusPutOptions): Promise<
 }
 
 export async function prepareStoredObject(options: Omit<StoreObjectOptions, 'root'>): Promise<PreparedStorageObject> {
-  if (options.encrypt && !options.privateKey) {
-    throw new Error('--private-key is required when --encrypt is set')
+  if (options.privateKey) {
+    throw new Error('password-derived storage encryption was removed; use a governed recipient public key')
+  }
+  if (options.encrypt && !options.governed) {
+    throw new Error('governed encryption options are required when --encrypt is set')
   }
 
   const sourcePath = path.resolve(options.file)
+  const sourceStat = await fs.stat(sourcePath)
+  if (!sourceStat.isFile()) throw new Error('storage input must be a regular file')
+  if (options.governed && sourceStat.size > MAX_GOVERNED_PLAINTEXT_BYTES) {
+    throw new Error(
+      `governed encryption exceeds this Node platform's HGD1 limit of ${MAX_GOVERNED_PLAINTEXT_BYTES} plaintext bytes`,
+    )
+  }
   const source = await fs.readFile(sourcePath)
   const sourceHash = sha256(source)
-  const encrypted = Boolean(options.encrypt)
-  const storedBytes = encrypted ? encryptBytes(source, options.privateKey ?? '') : source
+  const encrypted = Boolean(options.governed)
+  let storedBytes: Buffer = source
+  let encryptionKeyHash = '0'.repeat(64)
+  let envelopeCommitment: string | undefined
+  let ttlSec: number | undefined
+  let expiresAt: number | undefined
+  let keyCustodians: string[] = []
+  if (options.governed) {
+    try {
+      const {context, recipient, recipientPublicKey} = options.governed
+      const now = options.governed.now ?? Math.floor(Date.now() / 1000)
+      if (!Number.isSafeInteger(now) || now <= 0 || context.created_at > now || now >= context.expires_at) {
+        throw new Error('governed storage envelope must be active when prepared')
+      }
+      ttlSec = context.expires_at - now
+      expiresAt = context.expires_at
+      if (!Number.isSafeInteger(ttlSec) || ttlSec <= 0 || ttlSec > 0xffff_ffff ||
+          !Number.isSafeInteger(expiresAt) || expiresAt > 0xffff_ffff) {
+        throw new Error('governed storage expiry is outside HarborStore time range')
+      }
+      keyCustodians = [...new Set(options.governed.keyCustodians)]
+      if (keyCustodians.length === 0 || keyCustodians.some((account) => !account)) {
+        throw new Error('at least one key custodian is required for governed temporary storage')
+      }
+      const envelope = encryptVaultBytes(source, recipientPublicKey, context, recipient, now)
+      requireInitialCustodyEnvelope(envelope)
+      storedBytes = vaultEnvelopeToBytes(envelope)
+      // HarborStore tracks the erasable, per-object recipient key rather than
+      // the randomized sealed-box bytes. Reusing this commitment for another
+      // object is rejected on-chain, so a custodian's erasure attestation is
+      // bound to the exact private-key material whose destruction makes this
+      // envelope permanently unreadable.
+      encryptionKeyHash = envelope.recipient_key_commitment
+      envelopeCommitment = vaultEnvelopeCommitment(envelope)
+    } finally {
+      source.fill(0)
+    }
+  }
   const contentHash = sha256(storedBytes)
-  const metadata = options.metadata ?? path.basename(sourcePath)
-  const encryptionKeyHash = encrypted ? sha256(options.privateKey ?? '') : '0'.repeat(64)
+  const metadata = options.metadata ?? (encrypted ? '{"kind":"governed-data"}' : path.basename(sourcePath))
   return {
     sourcePath,
     storedBytes,
@@ -338,8 +526,100 @@ export async function prepareStoredObject(options: Omit<StoreObjectOptions, 'roo
     bytes: storedBytes.length,
     encrypted,
     encryptionKeyHash,
+    temporary: encrypted,
+    ttlSec,
+    expiresAt,
+    keyCustodians,
+    envelopeCommitment,
     metadata,
   }
+}
+
+export async function prepareObjectForUpload(
+  options: Omit<StoreObjectOptions, 'root'> & {preparedOutput?: string},
+): Promise<{prepared: PreparedUploadObject; preparedPath?: string}> {
+  if (options.privateKey) {
+    throw new Error('password-derived storage encryption was removed; use a governed recipient public key')
+  }
+  if (options.encrypt && !options.governed) {
+    throw new Error('governed encryption options are required when --encrypt is set')
+  }
+  if (options.governed) {
+    const buffered = await prepareStoredObject(options)
+    const preparedPath = await persistPreparedStorageObject(buffered, options.preparedOutput)
+    if (!preparedPath) throw new Error('governed upload did not persist its recovery envelope')
+    return {prepared: {...buffered, uploadPath: preparedPath}, preparedPath}
+  }
+
+  const sourcePath = path.resolve(options.file)
+  const before = await fs.stat(sourcePath)
+  if (!before.isFile()) throw new Error('storage input must be a regular file')
+  if (!Number.isSafeInteger(before.size) || before.size <= 0) {
+    throw new Error('public storage input size must be a positive safe integer')
+  }
+  const contentHash = await hashFile(sourcePath)
+  const after = await fs.stat(sourcePath)
+  if (after.size !== before.size || after.mtimeMs !== before.mtimeMs || after.ino !== before.ino) {
+    throw new Error('public storage input changed while it was being hashed')
+  }
+  return {
+    prepared: {
+      sourcePath,
+      uploadPath: sourcePath,
+      contentHash,
+      sourceHash: contentHash,
+      bytes: before.size,
+      encrypted: false,
+      encryptionKeyHash: '0'.repeat(64),
+      temporary: false,
+      keyCustodians: [],
+      metadata: options.metadata ?? path.basename(sourcePath),
+    },
+  }
+}
+
+export async function persistPreparedStorageObject(
+  prepared: PreparedStorageObject,
+  output?: string,
+): Promise<string | undefined> {
+  if (!prepared.temporary) return undefined
+  const target = path.resolve(output ?? path.join(
+    process.env.HARBOR_PREPARED_STORAGE_DIR ?? path.join(os.homedir(), '.harbor', 'prepared-storage'),
+    `${prepared.contentHash}.hgd1.json`,
+  ))
+  const directory = path.dirname(target)
+  await fs.mkdir(directory, {recursive: true, mode: 0o700})
+  const temporary = path.join(directory, `.${path.basename(target)}.${process.pid}.${crypto.randomBytes(8).toString('hex')}.tmp`)
+  let linked = false
+  try {
+    const handle = await fs.open(temporary, 'wx', 0o600)
+    try {
+      await handle.writeFile(prepared.storedBytes)
+      await handle.sync()
+    } finally {
+      await handle.close()
+    }
+    try {
+      await fs.link(temporary, target)
+      linked = true
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error
+      const stat = await fs.lstat(target)
+      if (!stat.isFile() || stat.isSymbolicLink()) {
+        throw new Error(`prepared governed object path is not a regular file: ${target}`)
+      }
+      const existing = await fs.readFile(target)
+      if (sha256(existing) !== prepared.contentHash || !existing.equals(prepared.storedBytes)) {
+        throw new Error(`prepared governed object path already contains different bytes: ${target}`)
+      }
+    }
+  } finally {
+    await fs.rm(temporary, {force: true})
+  }
+  if (linked) {
+    await fs.chmod(target, 0o600)
+  }
+  return target
 }
 
 export async function storeObject(options: StoreObjectOptions): Promise<StoredObjectResult> {
@@ -356,24 +636,126 @@ export async function storeObject(options: StoreObjectOptions): Promise<StoredOb
     bytes: prepared.bytes,
     encrypted: prepared.encrypted,
     encryptionKeyHash: prepared.encryptionKeyHash,
+    temporary: prepared.temporary,
+    ttlSec: prepared.ttlSec,
+    expiresAt: prepared.expiresAt,
+    keyCustodians: prepared.keyCustodians,
+    envelopeCommitment: prepared.envelopeCommitment,
     metadata: prepared.metadata,
     registerAction: {
       contract: 'harborstore',
-      action: 'putobject',
-      data: [
-        '<owner>',
-        prepared.contentHash,
-        prepared.bytes,
-        prepared.encrypted,
-        prepared.encryptionKeyHash,
-        prepared.metadata,
-      ],
+      action: prepared.temporary ? 'puttempat' : 'putobject',
+      data: prepared.temporary
+        ? [
+          '<owner>', prepared.contentHash, prepared.bytes, true,
+          prepared.encryptionKeyHash, prepared.expiresAt, prepared.keyCustodians,
+          prepared.metadata,
+        ]
+        : [
+          '<owner>', prepared.contentHash, prepared.bytes, false,
+          prepared.encryptionKeyHash, prepared.metadata,
+        ],
     },
   }
 }
 
 function isActive(value: boolean | number | string): boolean {
   return value === true || value === 1 || value === '1' || value === 'true'
+}
+
+function assetValue(value: string, label: string): {amount: bigint; symbol: string} {
+  const match = /^(-?\d+)(?:\.(\d+))? ([A-Z]{1,7})$/.exec(value)
+  if (!match) throw new Error(`${label} is not a canonical asset`)
+  const fraction = match[2] ?? ''
+  const magnitude = BigInt(`${match[1].startsWith('-') ? '-' : ''}${match[1].replace('-', '')}${fraction}`)
+  return {amount: magnitude, symbol: `${fraction.length},${match[3]}`}
+}
+
+export function filterEligibleMarketServices(
+  services: MarketServiceRow[],
+  providers: MarketProviderRow[],
+  serviceTypes: MarketServiceTypeRow[],
+): MarketServiceRow[] {
+  const providersByOwner = new Map(providers.map((provider) => [provider.owner, provider]))
+  const typesById = new Map(serviceTypes.map((type) => [
+    canonicalUint64(type.id, 'service type id'), type,
+  ]))
+  return services.filter((service) => {
+    if (!isActive(service.active)) return false
+    const provider = providersByOwner.get(service.provider)
+    const serviceType = typesById.get(canonicalUint64(service.service_type, 'service type id'))
+    if (!provider || !isActive(provider.active) || !serviceType || !isActive(serviceType.enabled)) return false
+    try {
+      const stake = assetValue(provider.stake, `provider ${provider.owner} stake`)
+      const minimum = assetValue(serviceType.min_provider_stake, `service type ${service.service_type} minimum stake`)
+      return stake.amount > 0n && stake.symbol === minimum.symbol && stake.amount >= minimum.amount
+    } catch {
+      return false
+    }
+  })
+}
+
+async function marketServiceRows(options: {url?: string; marketContract: string}): Promise<{
+  services: MarketServiceRow[]
+  providers: MarketProviderRow[]
+  serviceTypes: MarketServiceTypeRow[]
+}> {
+  const common = {url: options.url, scope: options.marketContract, limit: 1000}
+  const [services, providers, serviceTypes] = await Promise.all([
+    getAllTableRows<MarketServiceRow>(options.marketContract, 'services', common),
+    getAllTableRows<MarketProviderRow>(options.marketContract, 'providers', common),
+    getAllTableRows<MarketServiceTypeRow>(options.marketContract, 'svctypes', common),
+  ])
+  return {services, providers, serviceTypes}
+}
+
+function lifecycleEpochSeconds(value: number | string, field: string): number {
+  if (typeof value === 'number' || /^\d+$/.test(String(value))) {
+    const seconds = Number(value)
+    if (Number.isSafeInteger(seconds) && seconds >= 0) {
+      return seconds
+    }
+    throw new Error(`storage lifecycle ${field} is invalid`)
+  }
+  const raw = String(value)
+  const normalized = /(Z|[+-]\d\d:?\d\d)$/.test(raw) ? raw : `${raw}Z`
+  const milliseconds = Date.parse(normalized)
+  if (!Number.isFinite(milliseconds) || milliseconds < 0) {
+    throw new Error(`storage lifecycle ${field} is invalid`)
+  }
+  return Math.floor(milliseconds / 1000)
+}
+
+export function requireDownloadableStorageObject(
+  object: StorageObjectRow,
+  lifecycle?: StorageLifecycleRow,
+  nowEpochSec = Math.floor(Date.now() / 1000),
+): void {
+  if (Number(object.status) !== 1) {
+    throw new Error(`storage object ${object.id} is not active`)
+  }
+  if (!Number.isSafeInteger(nowEpochSec) || nowEpochSec < 0) {
+    throw new Error('storage lifecycle comparison time is invalid')
+  }
+  if (!lifecycle) {
+    return
+  }
+  if (canonicalUint64(lifecycle.object_id, 'storage lifecycle object id') !==
+      canonicalUint64(object.id, 'storage object id')) {
+    throw new Error(`storage lifecycle does not match object ${object.id}`)
+  }
+  const expiresAt = lifecycleEpochSeconds(lifecycle.expires_at, 'expires_at')
+  const tombstonedAt = lifecycleEpochSeconds(lifecycle.tombstoned_at, 'tombstoned_at')
+  const completedAt = lifecycleEpochSeconds(lifecycle.completed_at, 'completed_at')
+  if (tombstonedAt !== 0) {
+    throw new Error(`storage object ${object.id} is tombstoned`)
+  }
+  if (completedAt !== 0) {
+    throw new Error(`storage object ${object.id} deletion is complete`)
+  }
+  if (expiresAt !== 0 && nowEpochSec >= expiresAt) {
+    throw new Error(`storage object ${object.id} has expired`)
+  }
 }
 
 function routerLoad(service: MarketServiceRow): number {
@@ -413,11 +795,12 @@ function heartbeatFresh(service: MarketServiceRow): boolean {
 
 export function selectBestRouter(services: MarketServiceRow[]): MarketServiceRow {
   const routers = services
-    .filter((service) => Number(service.service_type) === 14)
+    .filter((service) => canonicalUint64(service.service_type, 'service type id') === '14')
     .filter((service) => isActive(service.active))
     .filter((service) => heartbeatFresh(service))
     .filter((service) => service.endpoint.startsWith('http://') || service.endpoint.startsWith('https://'))
-    .sort((a, b) => routerLoad(a) - routerLoad(b) || Number(a.id) - Number(b.id))
+    .sort((a, b) => routerLoad(a) - routerLoad(b) ||
+      compareUint64(a.id, b.id, 'service id'))
 
   const router = routers[0]
   if (!router) {
@@ -440,12 +823,9 @@ async function isRouterHealthy(router: MarketServiceRow): Promise<boolean> {
 }
 
 export async function discoverBestRouter(options: {url?: string; marketContract: string}): Promise<MarketServiceRow> {
-  const services = await getTableRows<MarketServiceRow>(options.marketContract, 'services', {
-    url: options.url,
-    limit: 1000,
-  })
-  const candidates = services.rows
-    .filter((service) => Number(service.service_type) === 14)
+  const market = await marketServiceRows(options)
+  const candidates = filterEligibleMarketServices(market.services, market.providers, market.serviceTypes)
+    .filter((service) => canonicalUint64(service.service_type, 'service type id') === '14')
     .filter((service) => isActive(service.active))
     .filter((service) => service.endpoint.startsWith('http://') || service.endpoint.startsWith('https://'))
 
@@ -458,30 +838,183 @@ export async function discoverBestRouter(options: {url?: string; marketContract:
   return selectBestRouter(healthy)
 }
 
+function normalizedServiceEndpoint(endpoint: string): string {
+  const parsed = new URL(endpoint)
+  if ((parsed.protocol !== 'http:' && parsed.protocol !== 'https:') ||
+      parsed.username || parsed.password || parsed.search || parsed.hash) {
+    throw new Error('router endpoint must be a credential-free HTTP(S) origin and path')
+  }
+  const pathname = parsed.pathname.replace(/\/+$/, '')
+  return `${parsed.protocol}//${parsed.host}${pathname}`
+}
+
+export async function discoverRouterAtEndpoint(options: {
+  url?: string
+  marketContract: string
+  endpoint: string
+}): Promise<MarketServiceRow> {
+  const expected = normalizedServiceEndpoint(options.endpoint)
+  const market = await marketServiceRows(options)
+  const matches = filterEligibleMarketServices(market.services, market.providers, market.serviceTypes).filter((service) => {
+    if (canonicalUint64(service.service_type, 'service type id') !== '14') return false
+    try {
+      return normalizedServiceEndpoint(service.endpoint) === expected
+    } catch {
+      return false
+    }
+  })
+  if (matches.length === 0) {
+    throw new Error('explicit router endpoint is not an active on-chain router service')
+  }
+  const identities = new Set(matches.map((service) => service.provider))
+  if (identities.size !== 1) {
+    throw new Error('explicit router endpoint maps to multiple active on-chain router identities')
+  }
+  return selectBestRouter(matches)
+}
+
+async function routerForUpload(options: {
+  url?: string
+  marketContract: string
+  routerUrl?: string
+}): Promise<MarketServiceRow> {
+  return options.routerUrl
+    ? discoverRouterAtEndpoint({
+      url: options.url,
+      marketContract: options.marketContract,
+      endpoint: options.routerUrl,
+    })
+    : discoverBestRouter({url: options.url, marketContract: options.marketContract})
+}
+
+async function authorizeObjectRouter(options: AuthOptions & {
+  storageContract: string
+  owner: string
+  objectId: number | string
+  router: string
+}): Promise<unknown> {
+  const now = Math.floor(Date.now() / 1000)
+  return pushAction({
+    contract: options.storageContract,
+    action: 'authroute',
+    data: {
+      owner: options.owner,
+      object_id: canonicalUint64(options.objectId, 'storage object id'),
+      router: options.router,
+      expires_at: antelopeTimePointSec(now + 600),
+    },
+    url: options.url,
+    actor: options.actor ?? options.owner,
+    permission: options.permission,
+    key: options.key,
+    expiration: options.expiration,
+    json: options.json,
+  })
+}
+
+async function waitForObjectRouterAuthorization(options: {
+  url?: string
+  storageContract: string
+  owner: string
+  objectId: number | string
+  router: string
+  timeoutMs?: number
+}): Promise<void> {
+  const objectId = canonicalUint64(options.objectId, 'storage object id')
+  const parsedObjectId = BigInt(objectId)
+  const upperBound = parsedObjectId < ((1n << 64n) - 1n)
+    ? (parsedObjectId + 1n).toString()
+    : undefined
+  const deadline = Date.now() + (options.timeoutMs ?? 10_000)
+  let lastState = 'authorization row is not visible'
+  while (Date.now() < deadline) {
+    const result = await getTableRows<Record<string, unknown>>(
+      options.storageContract,
+      'routeauths',
+      {
+        url: options.url,
+        scope: options.storageContract,
+        lowerBound: objectId,
+        upperBound,
+        limit: 2,
+        indexPosition: '1',
+        keyType: 'i64',
+      },
+    )
+    const matching = result.rows.filter((row) => {
+      try {
+        return canonicalUint64(row.object_id, 'route authorization object id') === objectId
+      } catch {
+        return false
+      }
+    })
+    if (matching.length === 1) {
+      const row = matching[0]
+      const authorizedAtText = String(row.authorized_at ?? '')
+      const expiresAtText = String(row.expires_at ?? '')
+      const usedAtText = String(row.used_at ?? '')
+      const parseChainTime = (value: string): number => Date.parse(
+        value.endsWith('Z') ? value : `${value}Z`,
+      )
+      const authorizedAt = parseChainTime(authorizedAtText)
+      const expiresAt = parseChainTime(expiresAtText)
+      const usedAt = parseChainTime(usedAtText)
+      const now = Date.now()
+      if (
+        row.owner === options.owner
+        && row.router === options.router
+        && Number.isFinite(authorizedAt)
+        && authorizedAt <= now
+        && Number.isFinite(expiresAt)
+        && expiresAt > now
+        && (!Number.isFinite(usedAt) || usedAt === 0)
+      ) {
+        return
+      }
+      lastState = 'authorization row is visible but not yet live and unused'
+    } else if (matching.length > 1) {
+      throw new Error(`router authorization for storage object ${objectId} is ambiguous`)
+    }
+    await new Promise((resolve) => setTimeout(resolve, 100))
+  }
+  throw new Error(
+    `router authorization for storage object ${objectId} did not become live: ${lastState}`,
+  )
+}
+
 export function buildRouterUploadHeaders(input: Omit<RouterUploadInput, 'router'>): Record<string, string> {
+  const byteLength = input.bytes?.length ?? input.byteLength
   return {
     'content-type': 'application/octet-stream',
-    'x-harbor-object-id': String(input.objectId),
+    'content-length': String(byteLength),
+    'x-harbor-object-id': canonicalUint64(input.objectId, 'storage object id'),
     'x-harbor-content-hash': input.contentHash,
     'x-harbor-owner': input.owner,
-    'x-harbor-bytes': String(input.bytes.length),
+    'x-harbor-bytes': String(byteLength),
+    'x-harbor-required-replicas': String(input.requiredReplicas),
+    'x-harbor-encrypted': input.encrypted ? 'true' : 'false',
+    'x-harbor-encryption-key-hash': input.encryptionKeyHash,
   }
 }
 
 export async function uploadToRouter(input: RouterUploadInput): Promise<RouterDistributionResult> {
-  const body = input.bytes.buffer.slice(
-    input.bytes.byteOffset,
-    input.bytes.byteOffset + input.bytes.byteLength
-  ) as ArrayBuffer
-  const response = await fetch(new URL('/storage/objects', input.router.endpoint), {
+  const body = input.bytes
+    ? input.bytes.buffer.slice(input.bytes.byteOffset, input.bytes.byteOffset + input.bytes.byteLength) as ArrayBuffer
+    : createReadStream(input.file)
+  const request: RequestInit & {duplex?: 'half'} = {
     method: 'POST',
     headers: buildRouterUploadHeaders(input),
-    body,
-  })
+    body: body as BodyInit,
+  }
+  if (!input.bytes) request.duplex = 'half'
+  const response = await fetch(new URL('/storage/objects', input.router.endpoint), request)
   const text = await response.text()
   const payload = text ? JSON.parse(text) as RouterDistributionResult : {}
   if (!response.ok) {
     throw new Error(`router upload failed: ${response.status} ${text}`)
+  }
+  if (payload.object_id !== undefined) {
+    payload.object_id = canonicalUint64(payload.object_id, 'router response object id')
   }
   return payload
 }
@@ -491,31 +1024,140 @@ export async function resolveStorageObjectId(options: {
   storageContract: string
   owner: string
   contentHash: string
-}): Promise<number> {
-  const byHash = await getTableRows<StorageObjectRow>(options.storageContract, 'objects', {
+  minimumIdInclusive: string
+  maximumIdExclusive?: string
+  transactionResult?: unknown
+  action: 'putobject' | 'puttempat'
+}): Promise<string> {
+  const minimum = canonicalUint64(options.minimumIdInclusive, 'pre-registration next object id')
+  const maximum = canonicalUint64(
+    options.maximumIdExclusive ?? await readContractNextId(options.storageContract, 'next_object_id', {url: options.url}),
+    'post-registration next object id',
+  )
+  if (BigInt(maximum) <= BigInt(minimum)) {
+    throw new Error('storage registration did not advance next_object_id')
+  }
+
+  const returned = actionUint64Return(
+    options.transactionResult,
+    options.storageContract,
+    options.action,
+  )
+  const lowerBound = returned ?? minimum
+  const upperBound = returned ? (BigInt(returned) + 1n).toString() : maximum
+  if (BigInt(lowerBound) < BigInt(minimum) || BigInt(lowerBound) >= BigInt(maximum)) {
+    throw new Error('storage action returned an object id outside its registration window')
+  }
+  const rows = await getAllTableRows<StorageObjectRow>(options.storageContract, 'objects', {
+    url: options.url,
+    scope: options.storageContract,
+    lowerBound,
+    upperBound,
+    limit: 1000,
+    indexPosition: '1',
+    keyType: 'i64',
+  })
+  const matches = rows.filter((row) =>
+    row.content_hash === options.contentHash &&
+    row.owner === options.owner &&
+    BigInt(canonicalUint64(row.id, 'storage object id')) >= BigInt(minimum) &&
+    BigInt(canonicalUint64(row.id, 'storage object id')) < BigInt(maximum)
+  )
+  if (matches.length !== 1) {
+    throw new Error(
+      `storage registration resolved ${matches.length} newly created objects for owner ${options.owner} and hash ${options.contentHash}`,
+    )
+  }
+  if (returned && canonicalUint64(matches[0].id, 'storage object id') !== returned) {
+    throw new Error('storage action return value does not match the created object row')
+  }
+  return canonicalUint64(matches[0].id, 'storage object id')
+}
+
+async function resolveStorageObjectById(options: {
+  url?: string
+  storageContract: string
+  objectId: number | string
+}): Promise<StorageObjectRow> {
+  const objectId = canonicalUint64(options.objectId, 'storage object id')
+  const upperBound = uint64ExclusiveUpper(objectId, 'storage object id')
+  const result = await getTableRows<StorageObjectRow>(options.storageContract, 'objects', {
+    url: options.url,
+    scope: options.storageContract,
+    lowerBound: objectId,
+    ...(upperBound ? {upperBound} : {}),
+    limit: 2,
+    indexPosition: '1',
+    keyType: 'i64',
+  })
+  const exact = result.rows.filter((row) =>
+    canonicalUint64(row.id, 'storage object row id') === objectId
+  )
+  if (exact.length !== 1) {
+    throw new Error(`storage object ${objectId} was not uniquely found`)
+  }
+  return exact[0]
+}
+
+function routerUploadIdentity(
+  object: StorageObjectRow,
+  expected: {
+    objectId: number | string
+    owner: string
+    contentHash: string
+    byteLength: number
+    encrypted?: boolean
+    encryptionKeyHash?: string
+  },
+): Pick<RouterUploadInput, 'requiredReplicas' | 'encrypted' | 'encryptionKeyHash'> {
+  const objectId = canonicalUint64(expected.objectId, 'storage object id')
+  const objectBytes = canonicalUint64(object.bytes, 'storage object bytes')
+  const requiredReplicas = Number(object.required_replicas)
+  const encrypted = isActive(object.encrypted)
+  if (canonicalUint64(object.id, 'storage object row id') !== objectId ||
+      object.owner !== expected.owner || object.content_hash !== expected.contentHash ||
+      BigInt(objectBytes) !== BigInt(expected.byteLength) || Number(object.status) !== 1) {
+    throw new Error(`storage object ${objectId} does not match the upload identity`)
+  }
+  if (!Number.isSafeInteger(requiredReplicas) || requiredReplicas <= 0 || requiredReplicas > 0xff) {
+    throw new Error(`storage object ${objectId} has invalid required replicas`)
+  }
+  if (!/^[0-9a-f]{64}$/.test(object.encryption_key_hash) ||
+      (encrypted && object.encryption_key_hash === '0'.repeat(64)) ||
+      (!encrypted && object.encryption_key_hash !== '0'.repeat(64))) {
+    throw new Error(`storage object ${objectId} has invalid encryption metadata`)
+  }
+  if ((expected.encrypted !== undefined && encrypted !== expected.encrypted) ||
+      (expected.encryptionKeyHash !== undefined &&
+       object.encryption_key_hash !== expected.encryptionKeyHash)) {
+    throw new Error(`storage object ${objectId} encryption metadata does not match registration`)
+  }
+  return {
+    requiredReplicas,
+    encrypted,
+    encryptionKeyHash: object.encryption_key_hash,
+  }
+}
+
+export async function storageObjectsByHash(options: {
+  url?: string
+  storageContract: string
+  contentHash: string
+}): Promise<StorageObjectRow[]> {
+  if (!/^[0-9a-f]{64}$/.test(options.contentHash)) {
+    throw new Error('storage content hash must be 64 lowercase hexadecimal characters')
+  }
+  const upperBound = checksum256ExclusiveUpper(options.contentHash)
+  const byHash = await getAllTableRows<StorageObjectRow>(options.storageContract, 'objects', {
     url: options.url,
     scope: options.storageContract,
     indexPosition: '3',
     keyType: 'sha256',
     lowerBound: options.contentHash,
-    upperBound: options.contentHash,
-    limit: 10,
-  })
-  const exact = byHash.rows.find((row) => row.content_hash === options.contentHash && row.owner === options.owner)
-  if (exact) {
-    return Number(exact.id)
-  }
-
-  const scan = await getTableRows<StorageObjectRow>(options.storageContract, 'objects', {
-    url: options.url,
-    scope: options.storageContract,
+    ...(upperBound ? {upperBound} : {}),
     limit: 1000,
   })
-  const scanned = scan.rows.find((row) => row.content_hash === options.contentHash && row.owner === options.owner)
-  if (!scanned) {
-    throw new Error(`storage object not found for hash ${options.contentHash}`)
-  }
-  return Number(scanned.id)
+  return byHash.filter((row) => row.content_hash === options.contentHash)
 }
 
 export async function resolveStorageObjectByHash(options: {
@@ -523,46 +1165,29 @@ export async function resolveStorageObjectByHash(options: {
   storageContract: string
   contentHash: string
 }): Promise<StorageObjectRow> {
-  const byHash = await getTableRows<StorageObjectRow>(options.storageContract, 'objects', {
-    url: options.url,
-    scope: options.storageContract,
-    indexPosition: '3',
-    keyType: 'sha256',
-    lowerBound: options.contentHash,
-    upperBound: options.contentHash,
-    limit: 10,
-  })
-  const exact = byHash.rows.find((row) => row.content_hash === options.contentHash)
-  if (exact) {
-    return exact
-  }
-
-  const scan = await getTableRows<StorageObjectRow>(options.storageContract, 'objects', {
-    url: options.url,
-    scope: options.storageContract,
-    limit: 1000,
-  })
-  const scanned = scan.rows.find((row) => row.content_hash === options.contentHash)
-  if (!scanned) {
-    throw new Error(`storage object not found for hash ${options.contentHash}`)
-  }
-  return scanned
+  const exact = await storageObjectsByHash(options)
+  if (exact[0]) return exact[0]
+  throw new Error(`storage object not found for hash ${options.contentHash}`)
 }
 
 export function storageProvidersForReplicas(
   replicas: StorageReplicaRow[],
   services: MarketServiceRow[],
-  objectId: number,
+  objectId: number | string,
+  providers: MarketProviderRow[],
+  serviceTypes: MarketServiceTypeRow[],
 ): Array<Pick<MarketServiceRow, 'provider' | 'endpoint'>> {
+  const canonicalObjectId = canonicalUint64(objectId, 'storage object id')
   const replicaProviders = new Set(
     replicas
-      .filter((replica) => Number(replica.object_id) === objectId)
+      .filter((replica) =>
+        canonicalUint64(replica.object_id, 'replica object id') === canonicalObjectId)
       .filter((replica) => isActive(replica.active))
       .map((replica) => replica.provider)
   )
-  return services
+  return filterEligibleMarketServices(services, providers, serviceTypes)
     .filter((service) => replicaProviders.has(service.provider))
-    .filter((service) => Number(service.service_type) === 3)
+    .filter((service) => canonicalUint64(service.service_type, 'service type id') === '3')
     .filter((service) => isActive(service.active))
     .filter((service) => service.endpoint.startsWith('http://') || service.endpoint.startsWith('https://'))
     .map((service) => ({provider: service.provider, endpoint: service.endpoint}))
@@ -579,28 +1204,44 @@ export async function downloadStoredObjectBytes(options: Omit<StorageDownloadOpt
     storageContract,
     contentHash: options.contentHash,
   })
-  const objectId = Number(object.id)
-  const replicas = await getTableRows<StorageReplicaRow>(storageContract, 'replicas', {
+  const objectId = canonicalUint64(object.id, 'storage object id')
+  if (objectId === '0') {
+    throw new Error(`storage object id is invalid for hash ${options.contentHash}`)
+  }
+  const objectUpperBound = uint64ExclusiveUpper(object.id, 'storage object id')
+  const lifecycleRows = await getTableRows<StorageLifecycleRow>(storageContract, 'lifecycles', {
+    url: options.url,
+    scope: storageContract,
+    lowerBound: objectId,
+    ...(objectUpperBound ? {upperBound: objectUpperBound} : {}),
+    limit: 2,
+  })
+  const lifecycle = lifecycleRows.rows.find((row) =>
+    canonicalUint64(row.object_id, 'storage lifecycle object id') === objectId)
+  requireDownloadableStorageObject(object, lifecycle)
+  const replicas = await getAllTableRows<StorageReplicaRow>(storageContract, 'replicas', {
     url: options.url,
     scope: storageContract,
     indexPosition: '2',
     keyType: 'i64',
-    lowerBound: String(objectId),
-    upperBound: String(objectId),
+    lowerBound: objectId,
+    ...(objectUpperBound ? {upperBound: objectUpperBound} : {}),
     limit: 1000,
   })
-  const services = await getTableRows<MarketServiceRow>(marketContract, 'services', {
-    url: options.url,
-    scope: marketContract,
-    limit: 1000,
-  })
-  const providers = storageProvidersForReplicas(replicas.rows, services.rows, objectId)
-  if (providers.length === 0) {
+  const market = await marketServiceRows({url: options.url, marketContract})
+  const storageProviders = storageProvidersForReplicas(
+    replicas,
+    market.services,
+    objectId,
+    market.providers,
+    market.serviceTypes,
+  )
+  if (storageProviders.length === 0) {
     throw new Error(`no active storage replicas found for object ${objectId}`)
   }
 
   const failures: string[] = []
-  for (const provider of providers) {
+  for (const provider of storageProviders) {
     try {
       const response = await fetch(new URL(`/objects/${options.contentHash}`, provider.endpoint))
       const body = Buffer.from(await response.arrayBuffer())
@@ -644,86 +1285,20 @@ export async function downloadStoredObject(options: StorageDownloadOptions): Pro
 export async function putReplicatedObject(options: ReplicatedPutOptions): Promise<ReplicatedPutResult> {
   const marketContract = options.marketContract ?? process.env.HARBOR_MARKET_CONTRACT ?? 'svcmarket'
   const storageContract = options.storageContract ?? process.env.HARBOR_STORAGE_CONTRACT ?? 'harborstore'
-  const prepared = await prepareStoredObject(options)
-
-  const putResult = await pushAction({
-    contract: storageContract,
-    action: 'putobject',
-    data: {
-      owner: options.owner,
-      content_hash: prepared.contentHash,
-      bytes: prepared.bytes,
-      encrypted: prepared.encrypted,
-      encryption_key_hash: prepared.encryptionKeyHash,
-      metadata: prepared.metadata,
-    },
-    url: options.url,
-    actor: options.actor ?? options.owner,
-    permission: options.permission,
-    key: options.key,
-    expiration: options.expiration,
-    json: options.json,
-  })
-  const objectId = await resolveStorageObjectId({
-    url: options.url,
-    storageContract,
-    owner: options.owner,
-    contentHash: prepared.contentHash,
-  })
-  const router = options.routerUrl
-    ? {id: 'override', provider: 'override', service_type: 14, active: true, endpoint: options.routerUrl}
-    : await discoverBestRouter({url: options.url, marketContract})
-  const distribution = await uploadToRouter({
-    router,
-    objectId,
-    owner: options.owner,
-    contentHash: prepared.contentHash,
-    bytes: prepared.storedBytes,
-  })
-
-  return {
-    sourcePath: prepared.sourcePath,
-    content_hash: prepared.contentHash,
-    source_hash: prepared.sourceHash,
-    bytes: prepared.bytes,
-    encrypted: prepared.encrypted,
-    encryption_key_hash: prepared.encryptionKeyHash,
-    object_id: objectId,
-    put_tx: (putResult as {transaction_id?: string}).transaction_id,
-    router: {id: router.id, provider: router.provider, endpoint: router.endpoint},
-    selected_storage_providers: distribution.selected_storage_providers ?? [],
-    replica_count: Number(distribution.replica_count ?? 0),
-    assignment_tx: typeof distribution.assignment_tx === 'string' ? distribution.assignment_tx : undefined,
-    distribution,
-  }
-}
-
-export async function putWalrusObject(options: WalrusPutOptions): Promise<WalrusPutResult> {
-  const storageContract = options.storageContract ?? process.env.HARBOR_STORAGE_CONTRACT ?? 'harborstore'
-  const prepared = await prepareStoredObject(options)
-  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'harbor-walrus-'))
-  const walrusPath = path.join(tempDir, prepared.contentHash)
+  const {prepared, preparedPath} = await prepareObjectForUpload(options)
   try {
-    await fs.writeFile(walrusPath, prepared.storedBytes)
-    const written = await fs.readFile(walrusPath)
-    const writtenHash = sha256(written)
-    if (writtenHash !== prepared.contentHash) {
-      throw new Error(`prepared Walrus bytes failed SHA-256 verification: ${writtenHash}`)
-    }
+    const router = await routerForUpload({
+      url: options.url,
+      marketContract,
+      routerUrl: options.routerUrl,
+    })
+    const registration = storageRegistrationAction(options.owner, prepared)
+    const minimumObjectId = await readContractNextId(storageContract, 'next_object_id', {url: options.url})
 
-    const walrus = await runWalrusStore(walrusPath, options)
-    const metadata = buildWalrusMetadata(prepared.metadata, walrus)
     const putResult = await pushAction({
       contract: storageContract,
-      action: 'putobject',
-      data: {
-        owner: options.owner,
-        content_hash: prepared.contentHash,
-        bytes: prepared.bytes,
-        encrypted: prepared.encrypted,
-        encryption_key_hash: prepared.encryptionKeyHash,
-        metadata,
-      },
+      action: registration.action,
+      data: registration.data,
       url: options.url,
       actor: options.actor ?? options.owner,
       permission: options.permission,
@@ -736,6 +1311,45 @@ export async function putWalrusObject(options: WalrusPutOptions): Promise<Walrus
       storageContract,
       owner: options.owner,
       contentHash: prepared.contentHash,
+      minimumIdInclusive: minimumObjectId,
+      transactionResult: putResult,
+      action: registration.action,
+    })
+    const registeredObject = await resolveStorageObjectById({
+      url: options.url,
+      storageContract,
+      objectId,
+    })
+    const uploadIdentity = routerUploadIdentity(registeredObject, {
+      objectId,
+      owner: options.owner,
+      contentHash: prepared.contentHash,
+      byteLength: prepared.bytes,
+      encrypted: prepared.encrypted,
+      encryptionKeyHash: prepared.encryptionKeyHash,
+    })
+    const routeAuthorization = await authorizeObjectRouter({
+      ...options,
+      storageContract,
+      owner: options.owner,
+      objectId,
+      router: router.provider,
+    })
+    await waitForObjectRouterAuthorization({
+      url: options.url,
+      storageContract,
+      owner: options.owner,
+      objectId,
+      router: router.provider,
+    })
+    const distribution = await uploadToRouter({
+      router,
+      objectId,
+      owner: options.owner,
+      contentHash: prepared.contentHash,
+      ...uploadIdentity,
+      file: prepared.uploadPath,
+      byteLength: prepared.bytes,
     })
 
     return {
@@ -745,32 +1359,133 @@ export async function putWalrusObject(options: WalrusPutOptions): Promise<Walrus
       bytes: prepared.bytes,
       encrypted: prepared.encrypted,
       encryption_key_hash: prepared.encryptionKeyHash,
+      temporary: prepared.temporary,
+      expires_in_sec: prepared.ttlSec,
+      expires_at: prepared.expiresAt,
+      key_custodians: prepared.keyCustodians,
+      envelope_commitment: prepared.envelopeCommitment,
+      prepared_path: preparedPath,
       object_id: objectId,
       put_tx: (putResult as {transaction_id?: string}).transaction_id,
-      metadata,
-      walrus,
+      route_authorization_tx: (routeAuthorization as {transaction_id?: string}).transaction_id,
+      router: {
+        id: canonicalUint64(router.id, 'router service id'),
+        provider: router.provider,
+        endpoint: router.endpoint,
+      },
+      selected_storage_providers: distribution.selected_storage_providers ?? [],
+      replica_count: Number(distribution.replica_count ?? 0),
+      assignment_tx: typeof distribution.assignment_tx === 'string' ? distribution.assignment_tx : undefined,
+      distribution,
     }
-  } finally {
-    await fs.rm(tempDir, {recursive: true, force: true})
+  } catch (error) {
+    throw preparedRecoveryError(error, preparedPath)
   }
 }
 
-export async function distributeStoredObject(options: Omit<ReplicatedPutOptions, 'storageContract'> & {objectId: number; contentHash: string}): Promise<RouterDistributionResult> {
+export async function putWalrusObject(options: WalrusPutOptions): Promise<WalrusPutResult> {
+  const storageContract = options.storageContract ?? process.env.HARBOR_STORAGE_CONTRACT ?? 'harborstore'
+  const {prepared, preparedPath} = await prepareObjectForUpload(options)
+  try {
+      const writtenHash = await hashFile(prepared.uploadPath)
+      if (writtenHash !== prepared.contentHash) {
+        throw new Error(`prepared Walrus bytes failed SHA-256 verification: ${writtenHash}`)
+      }
+
+      const walrus = await runWalrusStore(prepared.uploadPath, options)
+      const metadata = buildWalrusMetadata(prepared.metadata, walrus)
+      const registration = storageRegistrationAction(options.owner, prepared, metadata)
+      const minimumObjectId = await readContractNextId(storageContract, 'next_object_id', {url: options.url})
+      const putResult = await pushAction({
+        contract: storageContract,
+        action: registration.action,
+        data: registration.data,
+        url: options.url,
+        actor: options.actor ?? options.owner,
+        permission: options.permission,
+        key: options.key,
+        expiration: options.expiration,
+        json: options.json,
+      })
+      const objectId = await resolveStorageObjectId({
+        url: options.url,
+        storageContract,
+        owner: options.owner,
+        contentHash: prepared.contentHash,
+        minimumIdInclusive: minimumObjectId,
+        transactionResult: putResult,
+        action: registration.action,
+      })
+
+      return {
+        sourcePath: prepared.sourcePath,
+        content_hash: prepared.contentHash,
+        source_hash: prepared.sourceHash,
+        bytes: prepared.bytes,
+        encrypted: prepared.encrypted,
+        encryption_key_hash: prepared.encryptionKeyHash,
+        temporary: prepared.temporary,
+        expires_in_sec: prepared.ttlSec,
+        expires_at: prepared.expiresAt,
+        key_custodians: prepared.keyCustodians,
+        envelope_commitment: prepared.envelopeCommitment,
+        prepared_path: preparedPath,
+        object_id: objectId,
+        put_tx: (putResult as {transaction_id?: string}).transaction_id,
+        metadata,
+        walrus,
+      }
+  } catch (error) {
+    throw preparedRecoveryError(error, preparedPath)
+  }
+}
+
+export async function distributeStoredObject(options: ReplicatedPutOptions & {objectId: number | string; contentHash: string}): Promise<RouterDistributionResult> {
   const marketContract = options.marketContract ?? process.env.HARBOR_MARKET_CONTRACT ?? 'svcmarket'
-  const prepared = await prepareStoredObject(options)
+  const storageContract = options.storageContract ?? process.env.HARBOR_STORAGE_CONTRACT ?? 'harborstore'
+  const {prepared} = await prepareObjectForUpload(options)
   if (prepared.contentHash !== options.contentHash) {
     throw new Error(`content hash mismatch: expected ${options.contentHash}, got ${prepared.contentHash}`)
   }
-  const router = options.routerUrl
-    ? {id: 'override', provider: 'override', service_type: 14, active: true, endpoint: options.routerUrl}
-    : await discoverBestRouter({url: options.url, marketContract})
-  return uploadToRouter({
+  const registeredObject = await resolveStorageObjectById({
+    url: options.url,
+    storageContract,
+    objectId: options.objectId,
+  })
+  const uploadIdentity = routerUploadIdentity(registeredObject, {
+    objectId: options.objectId,
+    owner: options.owner,
+    contentHash: options.contentHash,
+    byteLength: prepared.bytes,
+  })
+  const router = await routerForUpload({url: options.url, marketContract, routerUrl: options.routerUrl})
+  const routeAuthorization = await authorizeObjectRouter({
+    ...options,
+    storageContract,
+    owner: options.owner,
+    objectId: options.objectId,
+    router: router.provider,
+  })
+  await waitForObjectRouterAuthorization({
+    url: options.url,
+    storageContract,
+    owner: options.owner,
+    objectId: options.objectId,
+    router: router.provider,
+  })
+  const distribution = await uploadToRouter({
     router,
     objectId: options.objectId,
     owner: options.owner,
     contentHash: options.contentHash,
-    bytes: prepared.storedBytes,
+    ...uploadIdentity,
+    file: prepared.uploadPath,
+    byteLength: prepared.bytes,
   })
+  return {
+    ...distribution,
+    route_authorization_tx: (routeAuthorization as {transaction_id?: string}).transaction_id,
+  }
 }
 
 async function walk(root: string, current = root): Promise<StorageManifestEntry[]> {

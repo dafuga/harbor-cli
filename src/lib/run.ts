@@ -58,6 +58,7 @@ function serviceProviders(basePort: number): string {
     ['aiinfer', 17],
     ['aitrain', 18],
     ['airouter', 19],
+    ['keycustody', 20],
   ] as const
   return services.map(([service, offset]) => {
     const endpoint = service === 'p2pseed' ? '127.0.0.1:9876' : `http://127.0.0.1:${basePort + offset}`

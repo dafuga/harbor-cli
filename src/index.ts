@@ -24,6 +24,7 @@ import {createStableCommand} from './commands/stable.js'
 import {createStorageCommand} from './commands/storage.js'
 import {createTableCommand} from './commands/table.js'
 import {createWalletCommand} from './commands/wallet.js'
+import {createVaultCommand} from './commands/vault.js'
 
 const program = new Command()
 
@@ -44,6 +45,7 @@ program.addCommand(createRunCommand())
 program.addCommand(createAgentCommand())
 program.addCommand(createAiCommand())
 program.addCommand(createStorageCommand())
+program.addCommand(createVaultCommand())
 program.addCommand(createSocialCommand())
 program.addCommand(createBankCommand())
 program.addCommand(createStableCommand())

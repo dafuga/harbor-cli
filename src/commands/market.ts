@@ -51,20 +51,6 @@ export interface AgentOpportunityReport {
   opportunities: PrintableOpportunityWithUnable[]
 }
 
-export interface ReferralConfig {
-  id: number
-  enabled: boolean | number
-  first_level_bps: number
-  decay_bps: number
-  max_total_bps: number
-}
-
-export interface ReferralLink {
-  account: string
-  referrer: string
-  created_at: string
-}
-
 export interface ReferralStats {
   account: string
   direct_invites: number
@@ -72,8 +58,7 @@ export interface ReferralStats {
 }
 
 export interface ReferralReport {
-  config: ReferralConfig | null
-  referrals: ReferralLink[]
+  note: string
   stats: ReferralStats[]
 }
 
@@ -152,15 +137,14 @@ async function resolveServiceType(options: Pick<MarketOptions, 'url' | 'contract
 }
 
 async function loadReferralReport(options: MarketOptions): Promise<ReferralReport> {
-  const [config, referrals, stats] = await Promise.all([
-    getTableRows<ReferralConfig>(options.url, options.contract, 'refcfg'),
-    getTableRows<ReferralLink>(options.url, options.contract, 'referrals'),
-    getTableRows<ReferralStats>(options.url, options.contract, 'refstats'),
-  ])
+  const stats = await getTableRows<ReferralStats>(
+    options.url,
+    options.contract,
+    'refstats',
+  )
 
   return {
-    config: config.rows[0] ?? null,
-    referrals: referrals.rows,
+    note: 'Invite configuration and links live in eosio native state; SvcMarket exposes reward stats only.',
     stats: stats.rows,
   }
 }
@@ -269,7 +253,7 @@ function addServicesCommand(market: Command): void {
 function addReferralsCommand(market: Command): void {
   market
     .command('referrals')
-    .description('Inspect Harbor agent referral tree state')
+    .description('Inspect SvcMarket native-invite reward stats')
     .option('-u, --url <url>', 'Harbor chain API URL', process.env.HARBOR_API_URL ?? 'http://127.0.0.1:8888')
     .option('-c, --contract <account>', 'service market contract account', process.env.HARBOR_MARKET_CONTRACT ?? 'svcmarket')
     .option('--json', 'print JSON')
@@ -280,8 +264,7 @@ function addReferralsCommand(market: Command): void {
         return
       }
 
-      console.log(`Referral rewards: ${report.config && isActive(report.config.enabled) ? 'enabled' : 'disabled'}`)
-      console.table(report.referrals)
+      console.log(report.note)
       console.table(report.stats)
     })
 }

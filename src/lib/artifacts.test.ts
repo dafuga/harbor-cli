@@ -14,6 +14,7 @@ test('normalizeServiceName accepts canonical names and aliases', () => {
   assert.equal(normalizeServiceName('trace-api').name, 'traceapi')
   assert.equal(normalizeServiceName('history-actions').name, 'histactions')
   assert.equal(normalizeServiceName('appeal-committee').daemon, 'harbor-appeal-committeed')
+  assert.equal(normalizeServiceName('key-custody').daemon, 'harbor-keycustodyd')
 })
 
 test('installDownloadedBinary rejects checksum mismatches', async () => {

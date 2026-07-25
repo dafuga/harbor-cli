@@ -31,7 +31,7 @@ export interface ContractUploadOptions extends AuthOptions {
 
 export interface ContractUploadResult {
   manifest_hash: string
-  manifest_object_id: number
+  manifest_object_id: number | string
   manifest: ContractManifest
   wasm: Pick<ReplicatedPutResult, 'content_hash' | 'source_hash' | 'bytes' | 'object_id' | 'put_tx' | 'router' | 'replica_count'>
   abi: Pick<ReplicatedPutResult, 'content_hash' | 'source_hash' | 'bytes' | 'object_id' | 'put_tx' | 'router' | 'replica_count'>

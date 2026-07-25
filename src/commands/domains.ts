@@ -78,7 +78,9 @@ function parseField(value: string, type: FieldType): unknown {
     return Number(value)
   }
   if (type === 'boolean') {
-    return value === 'true' || value === '1'
+    if (value === 'true' || value === '1') return true
+    if (value === 'false' || value === '0') return false
+    throw new Error('boolean must be one of true, 1, false, or 0')
   }
   if (type === 'json') {
     return JSON.parse(value)

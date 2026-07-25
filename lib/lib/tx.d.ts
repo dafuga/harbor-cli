@@ -67,3 +67,11 @@ export declare function getTableRows<T = unknown>(contract: string, table: strin
     more: boolean | string;
     next_key?: string;
 }>;
+export declare function canonicalUint64(value: unknown, label?: string): string;
+export declare function displayUint64(value: unknown, label?: string): number | string;
+export declare function getAllTableRows<T = unknown>(contract: string, table: string, options?: Parameters<typeof getTableRows<T>>[2]): Promise<T[]>;
+export declare function readContractNextId(contract: string, field: string, options?: {
+    url?: string;
+}): Promise<string>;
+/** Best-effort extraction for contracts that expose a uint64 action return value. */
+export declare function actionUint64Return(result: unknown, contract: string, action: string): string | undefined;

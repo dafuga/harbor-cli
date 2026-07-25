@@ -1,5 +1,6 @@
 import http from 'node:http';
 import type { AuthOptions } from './tx.js';
+import { GovernedDataContext, VaultRecipient } from './vault-crypto.js';
 export interface StorageManifestEntry {
     path: string;
     bytes: number;
@@ -10,7 +11,15 @@ export interface StoreObjectOptions {
     file: string;
     encrypt?: boolean;
     privateKey?: string;
+    governed?: GovernedStorageEncryption;
     metadata?: string;
+}
+export interface GovernedStorageEncryption {
+    recipientPublicKey: Buffer;
+    context: GovernedDataContext;
+    recipient: VaultRecipient;
+    keyCustodians: string[];
+    now?: number;
 }
 export interface PreparedStorageObject {
     sourcePath: string;
@@ -20,8 +29,17 @@ export interface PreparedStorageObject {
     bytes: number;
     encrypted: boolean;
     encryptionKeyHash: string;
+    temporary: boolean;
+    ttlSec?: number;
+    expiresAt?: number;
+    keyCustodians: string[];
+    envelopeCommitment?: string;
     metadata: string;
 }
+export type PreparedUploadObject = Omit<PreparedStorageObject, 'storedBytes'> & {
+    storedBytes?: Buffer;
+    uploadPath: string;
+};
 export interface StoredObjectResult {
     sourcePath: string;
     storedPath: string;
@@ -30,11 +48,16 @@ export interface StoredObjectResult {
     bytes: number;
     encrypted: boolean;
     encryptionKeyHash: string;
+    temporary: boolean;
+    ttlSec?: number;
+    expiresAt?: number;
+    keyCustodians: string[];
+    envelopeCommitment?: string;
     metadata: string;
     registerAction: {
         contract: string;
         action: string;
-        data: [string, string, number, boolean, string, string];
+        data: unknown[];
     };
 }
 export interface MarketServiceRow {
@@ -49,6 +72,18 @@ export interface MarketServiceRow {
     endpoint: string;
     metadata?: string;
 }
+export interface MarketProviderRow {
+    owner: string;
+    stake: string;
+    active: boolean | number | string;
+    metadata?: string;
+}
+export interface MarketServiceTypeRow {
+    id: number | string;
+    enabled: boolean | number | string;
+    min_provider_stake: string;
+    [key: string]: unknown;
+}
 export interface StorageObjectRow {
     id: number | string;
     owner: string;
@@ -57,7 +92,14 @@ export interface StorageObjectRow {
     encrypted: boolean | number | string;
     encryption_key_hash: string;
     required_replicas?: number | string;
+    status: number | string;
     metadata?: string;
+}
+export interface StorageLifecycleRow {
+    object_id: number | string;
+    expires_at: number | string;
+    tombstoned_at: number | string;
+    completed_at: number | string;
 }
 export interface StorageReplicaRow {
     id: number | string;
@@ -81,17 +123,28 @@ export interface StorageDownloadResult {
     output?: string;
     provider: Pick<MarketServiceRow, 'provider' | 'endpoint'>;
 }
-export interface RouterUploadInput {
+interface RouterUploadIdentity {
     router: Pick<MarketServiceRow, 'id' | 'provider' | 'endpoint'>;
-    objectId: number;
+    objectId: number | string;
     owner: string;
     contentHash: string;
-    bytes: Buffer;
+    requiredReplicas: number | string;
+    encrypted: boolean;
+    encryptionKeyHash: string;
 }
+export type RouterUploadInput = RouterUploadIdentity & ({
+    bytes: Buffer;
+    file?: never;
+    byteLength?: never;
+} | {
+    file: string;
+    byteLength: number;
+    bytes?: never;
+});
 export interface RouterDistributionResult {
     ok?: boolean;
     content_hash?: string;
-    object_id?: number;
+    object_id?: string;
     router?: string;
     selected_storage_providers?: string[];
     replica_count?: number;
@@ -105,6 +158,8 @@ export interface ReplicatedPutOptions extends AuthOptions {
     metadata?: string;
     encrypt?: boolean;
     privateKey?: string;
+    governed?: GovernedStorageEncryption;
+    preparedOutput?: string;
     marketContract?: string;
     storageContract?: string;
     routerUrl?: string;
@@ -115,6 +170,8 @@ export interface WalrusPutOptions extends AuthOptions {
     metadata?: string;
     encrypt?: boolean;
     privateKey?: string;
+    governed?: GovernedStorageEncryption;
+    preparedOutput?: string;
     storageContract?: string;
     walrusCommand?: string;
     walrusPublisherUrl?: string;
@@ -129,8 +186,15 @@ export interface ReplicatedPutResult {
     bytes: number;
     encrypted: boolean;
     encryption_key_hash: string;
-    object_id: number;
+    temporary: boolean;
+    expires_in_sec?: number;
+    expires_at?: number;
+    key_custodians: string[];
+    envelope_commitment?: string;
+    prepared_path?: string;
+    object_id: string;
     put_tx?: string;
+    route_authorization_tx?: string;
     router: Pick<MarketServiceRow, 'id' | 'provider' | 'endpoint'>;
     selected_storage_providers: string[];
     replica_count: number;
@@ -153,20 +217,45 @@ export interface WalrusPutResult {
     bytes: number;
     encrypted: boolean;
     encryption_key_hash: string;
-    object_id: number;
+    temporary: boolean;
+    expires_in_sec?: number;
+    expires_at?: number;
+    key_custodians: string[];
+    envelope_commitment?: string;
+    prepared_path?: string;
+    object_id: string;
     put_tx?: string;
     metadata: string;
     walrus: WalrusStoreRefs;
 }
+export declare function hashFile(filePath: string): Promise<string>;
+export declare function storageRegistrationAction(owner: string, prepared: Omit<PreparedStorageObject, 'storedBytes'>, metadata?: string): {
+    action: 'putobject' | 'puttempat';
+    data: Record<string, unknown>;
+};
 export declare function sha256Bytes(bytes: Buffer | string): string;
 export declare function parseWalrusStoreResponse(output: string, refs?: Omit<WalrusStoreRefs, 'blob_id' | 'response'>): WalrusStoreRefs;
 export declare function buildWalrusMetadata(metadata: string, walrus: WalrusStoreRefs): string;
 export declare function prepareStoredObject(options: Omit<StoreObjectOptions, 'root'>): Promise<PreparedStorageObject>;
+export declare function prepareObjectForUpload(options: Omit<StoreObjectOptions, 'root'> & {
+    preparedOutput?: string;
+}): Promise<{
+    prepared: PreparedUploadObject;
+    preparedPath?: string;
+}>;
+export declare function persistPreparedStorageObject(prepared: PreparedStorageObject, output?: string): Promise<string | undefined>;
 export declare function storeObject(options: StoreObjectOptions): Promise<StoredObjectResult>;
+export declare function filterEligibleMarketServices(services: MarketServiceRow[], providers: MarketProviderRow[], serviceTypes: MarketServiceTypeRow[]): MarketServiceRow[];
+export declare function requireDownloadableStorageObject(object: StorageObjectRow, lifecycle?: StorageLifecycleRow, nowEpochSec?: number): void;
 export declare function selectBestRouter(services: MarketServiceRow[]): MarketServiceRow;
 export declare function discoverBestRouter(options: {
     url?: string;
     marketContract: string;
+}): Promise<MarketServiceRow>;
+export declare function discoverRouterAtEndpoint(options: {
+    url?: string;
+    marketContract: string;
+    endpoint: string;
 }): Promise<MarketServiceRow>;
 export declare function buildRouterUploadHeaders(input: Omit<RouterUploadInput, 'router'>): Record<string, string>;
 export declare function uploadToRouter(input: RouterUploadInput): Promise<RouterDistributionResult>;
@@ -175,13 +264,22 @@ export declare function resolveStorageObjectId(options: {
     storageContract: string;
     owner: string;
     contentHash: string;
-}): Promise<number>;
+    minimumIdInclusive: string;
+    maximumIdExclusive?: string;
+    transactionResult?: unknown;
+    action: 'putobject' | 'puttempat';
+}): Promise<string>;
+export declare function storageObjectsByHash(options: {
+    url?: string;
+    storageContract: string;
+    contentHash: string;
+}): Promise<StorageObjectRow[]>;
 export declare function resolveStorageObjectByHash(options: {
     url?: string;
     storageContract: string;
     contentHash: string;
 }): Promise<StorageObjectRow>;
-export declare function storageProvidersForReplicas(replicas: StorageReplicaRow[], services: MarketServiceRow[], objectId: number): Array<Pick<MarketServiceRow, 'provider' | 'endpoint'>>;
+export declare function storageProvidersForReplicas(replicas: StorageReplicaRow[], services: MarketServiceRow[], objectId: number | string, providers: MarketProviderRow[], serviceTypes: MarketServiceTypeRow[]): Array<Pick<MarketServiceRow, 'provider' | 'endpoint'>>;
 export declare function downloadStoredObjectBytes(options: Omit<StorageDownloadOptions, 'output'>): Promise<{
     bytes: Buffer;
     provider: Pick<MarketServiceRow, 'provider' | 'endpoint'>;
@@ -189,8 +287,8 @@ export declare function downloadStoredObjectBytes(options: Omit<StorageDownloadO
 export declare function downloadStoredObject(options: StorageDownloadOptions): Promise<StorageDownloadResult>;
 export declare function putReplicatedObject(options: ReplicatedPutOptions): Promise<ReplicatedPutResult>;
 export declare function putWalrusObject(options: WalrusPutOptions): Promise<WalrusPutResult>;
-export declare function distributeStoredObject(options: Omit<ReplicatedPutOptions, 'storageContract'> & {
-    objectId: number;
+export declare function distributeStoredObject(options: ReplicatedPutOptions & {
+    objectId: number | string;
     contentHash: string;
 }): Promise<RouterDistributionResult>;
 export declare function buildStorageManifest(root: string): Promise<{
@@ -202,3 +300,4 @@ export declare function buildStorageManifest(root: string): Promise<{
     files: StorageManifestEntry[];
 }>;
 export declare function serveStorageManifest(root: string, port: number): http.Server;
+export {};
