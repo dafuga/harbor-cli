@@ -268,10 +268,25 @@ export interface QueryDatasetManifest {
   example_count: number
   example_hashes: string[]
   prompt_hashes: string[]
+  response_hashes: string[]
   trace_hashes: string[]
   campaign_ids: Uint64String[]
   consent_policy_hashes: string[]
   consent_receipt_hashes: string[]
+  oracle_evidence_hashes?: string[]
+  verifier_spec_hashes?: string[]
+  reward_policy?: {
+    authority: 'svcmarket-oracle'
+    sealed_verifiers_only: true
+    requires_outcome_signal: true
+    requires_nonzero_service_check: true
+  }
+  retention_policy: {
+    not_after_epoch_sec: number
+    deletion_required_on_revocation: true
+  }
+  base_model_hash?: string
+  tokenizer_hash?: string
   quality_policy: Record<string, unknown>
   privacy_policy: Record<string, unknown>
   training_metadata?: Record<string, unknown>
@@ -301,12 +316,136 @@ export interface QueryDatasetPackOptions {
   include_unscored?: boolean
   max_examples?: number
   as_of_epoch_sec?: number
+  rlvr_only?: boolean
+  base_model_hash?: string
+  tokenizer_hash?: string
+}
+
+export interface RlvrVerifierSpec {
+  id: string
+  type: 'exact_text' | 'numeric_tolerance' | 'json_constraints' | 'token_sequence_similarity'
+  oracle: string
+  oracle_evidence_hash: string
+  svc_check_id: Uint64String
+  expected?: string | number
+  tolerance?: number
+  required?: Record<string, string | number | boolean | null>
+}
+
+export interface RlvrRecipe {
+  format: 'harbor.ai.rlvr-recipe.v1'
+  algorithm: 'grpo'
+  base_model: string
+  base_model_hash: string
+  tokenizer_hash: string
+  dataset_hash: string
+  oracle_evidence_root: string
+  seed: number
+  group_size: number
+  batch_size: number
+  steps: number
+  max_prompt_tokens: number
+  max_completion_tokens: number
+  clip_epsilon: number
+  kl_coefficient: number
+  learning_rate: number
+  lora_layers: number
+  verifiers: RlvrVerifierSpec[]
+}
+
+export function buildRlvrRecipe(input: Omit<RlvrRecipe, 'format' | 'algorithm' | 'oracle_evidence_root'>): {
+  recipe: RlvrRecipe
+  recipe_json: string
+  recipe_hash: string
+} {
+  const hashes = {
+    base_model_hash: hash256(input.base_model_hash),
+    tokenizer_hash: hash256(input.tokenizer_hash),
+    dataset_hash: hash256(input.dataset_hash),
+  }
+  if (!input.base_model || input.base_model.length > 256 || Object.values(hashes).some((value) => !value)) {
+    throw new Error('RLVR base model and model/tokenizer/dataset hashes are required')
+  }
+  const boundedInteger = (value: number, label: string, minimum: number, maximum: number) => {
+    if (!Number.isSafeInteger(value) || value < minimum || value > maximum) {
+      throw new Error(`${label} must be an integer between ${minimum} and ${maximum}`)
+    }
+    return value
+  }
+  const boundedNumber = (value: number, label: string, minimum: number, maximum: number) => {
+    if (!Number.isFinite(value) || value < minimum || value > maximum) {
+      throw new Error(`${label} must be finite and between ${minimum} and ${maximum}`)
+    }
+    return value
+  }
+  const supported = new Set(['exact_text', 'numeric_tolerance', 'json_constraints', 'token_sequence_similarity'])
+  if (!Array.isArray(input.verifiers) || input.verifiers.length === 0 || input.verifiers.length > 64) {
+    throw new Error('RLVR recipe requires 1 to 64 sealed verifiers')
+  }
+  const verifiers = input.verifiers.map((candidate): RlvrVerifierSpec => {
+    if (!candidate.id || candidate.id.length > 128 || !supported.has(candidate.type)) {
+      throw new Error(`unsupported or invalid sealed verifier: ${candidate.type}`)
+    }
+    const evidenceHash = hash256(candidate.oracle_evidence_hash)
+    if (!candidate.oracle || candidate.oracle.length > 13 || !evidenceHash) {
+      throw new Error('sealed verifier lacks its oracle evidence')
+    }
+    const svcCheckId = positiveUint64(candidate.svc_check_id, 'verifier service check id')
+    if (candidate.type === 'exact_text' || candidate.type === 'token_sequence_similarity') {
+      if (typeof candidate.expected !== 'string' || !candidate.expected || candidate.expected.length > 4096) {
+        throw new Error(`${candidate.type} requires bounded expected text`)
+      }
+    } else if (candidate.type === 'numeric_tolerance') {
+      if (typeof candidate.expected !== 'number' || !Number.isFinite(candidate.expected) ||
+          Math.abs(candidate.expected) > 1e100 ||
+          typeof candidate.tolerance !== 'number' || !Number.isFinite(candidate.tolerance) ||
+          candidate.tolerance < 0 || candidate.tolerance > 1e100) {
+        throw new Error('numeric_tolerance requires bounded finite expected and tolerance values')
+      }
+    } else if (!isPlainObject(candidate.required) || Object.keys(candidate.required).length === 0 ||
+               Object.keys(candidate.required).length > 32 ||
+               Object.keys(candidate.required).some((key) => !key || key.length > 128) ||
+               Object.values(candidate.required).some((value) => typeof value === 'object' && value !== null)) {
+      throw new Error('json_constraints requires 1 to 32 scalar fields')
+    }
+    return {...candidate, oracle_evidence_hash: evidenceHash, svc_check_id: svcCheckId}
+  })
+  if (new Set(verifiers.map((verifier) => verifier.id)).size !== verifiers.length) {
+    throw new Error('sealed verifier ids must be unique')
+  }
+  const oracleEvidenceRoot = sha256Bytes(Buffer.from(canonicalJson(
+    [...verifiers.map((verifier) => verifier.oracle_evidence_hash)].sort(),
+  )))
+  const recipe: RlvrRecipe = {
+    format: 'harbor.ai.rlvr-recipe.v1',
+    algorithm: 'grpo',
+    base_model: input.base_model,
+    base_model_hash: hashes.base_model_hash as string,
+    tokenizer_hash: hashes.tokenizer_hash as string,
+    dataset_hash: hashes.dataset_hash as string,
+    oracle_evidence_root: oracleEvidenceRoot,
+    seed: boundedInteger(input.seed, 'seed', 0, 0xffffffff),
+    group_size: boundedInteger(input.group_size, 'group size', 2, 64),
+    batch_size: boundedInteger(input.batch_size, 'batch size', 1, 4),
+    steps: boundedInteger(input.steps, 'steps', 1, 1024),
+    max_prompt_tokens: boundedInteger(input.max_prompt_tokens, 'max prompt tokens', 1, 2048),
+    max_completion_tokens: boundedInteger(input.max_completion_tokens, 'max completion tokens', 1, 512),
+    clip_epsilon: boundedNumber(input.clip_epsilon, 'clip epsilon', 0.01, 0.5),
+    kl_coefficient: boundedNumber(input.kl_coefficient, 'KL coefficient', 0, 1),
+    learning_rate: boundedNumber(input.learning_rate, 'learning rate', 1e-8, 1e-2),
+    lora_layers: boundedInteger(input.lora_layers, 'LoRA layers', 1, 64),
+    verifiers,
+  }
+  const recipeJson = canonicalJson(recipe)
+  return {recipe, recipe_json: recipeJson, recipe_hash: sha256Bytes(Buffer.from(recipeJson))}
 }
 
 export const AI_DATA_SCOPE_TRAINING = 1
 export const AI_DATA_SCOPE_PROMPT = 2
 export const AI_DATA_SCOPE_RESPONSE = 4
+export const AI_DATA_SCOPE_FEEDBACK = 16
 export const AI_DATA_REQUIRED_SCOPES = AI_DATA_SCOPE_TRAINING | AI_DATA_SCOPE_PROMPT | AI_DATA_SCOPE_RESPONSE
+export const AI_DATA_RLVR_REQUIRED_SCOPES = AI_DATA_REQUIRED_SCOPES | AI_DATA_SCOPE_FEEDBACK
 
 export interface AiDataConsentReceipt {
   campaign_id: Uint64String
@@ -580,6 +719,48 @@ function privacyReviewHash(record: Record<string, unknown>): string | undefined 
   return isPlainObject(review) ? hash256(review.report_hash ?? review.redaction_hash) : undefined
 }
 
+interface AcceptedOutcomeEvidence {
+  payload_hash: string
+  evidence_hash: string
+  verifier_spec_hash: string
+  oracle: string
+  svc_check_id: Uint64String
+  verifier_id: string
+}
+
+function acceptedOutcomeEvidence(record: Record<string, unknown>): AcceptedOutcomeEvidence | undefined | null {
+  const candidate = record.outcome_feedback ??
+    (isPlainObject(record.signal) ? record.signal.outcome_feedback ?? record.signal.outcome : undefined)
+  if (candidate === undefined) {
+    return undefined
+  }
+  if (!isPlainObject(candidate)) {
+    return null
+  }
+  const source = unknownRecordString(candidate, 'source')
+  const status = unknownRecordString(candidate, 'status')
+  const schema = unknownRecordString(candidate, 'schema')
+  const payloadHash = hash256(candidate.payload_hash)
+  const evidenceHash = hash256(candidate.evidence_hash)
+  const verifierSpecHash = hash256(candidate.verifier_spec_hash)
+  const oracle = unknownRecordString(candidate, 'oracle')
+  const svcCheckId = optionalPositiveUint64(candidate.svc_check_id, 'outcome service check id')
+  const verifierId = unknownRecordString(candidate, 'verifier_id') ?? verifierSpecHash
+  if (schema !== 'harbor.ai.outcome.v1' || source !== 'svcmarket-oracle' || status !== 'accepted' || !payloadHash ||
+      !evidenceHash || !verifierSpecHash || !oracle || !svcCheckId ||
+      !verifierId || verifierId.length > 128) {
+    return null
+  }
+  return {
+    payload_hash: payloadHash,
+    evidence_hash: evidenceHash,
+    verifier_spec_hash: verifierSpecHash,
+    oracle,
+    svc_check_id: svcCheckId,
+    verifier_id: verifierId,
+  }
+}
+
 function traceMatchesPackFilters(record: Record<string, unknown>, options: QueryDatasetPackOptions, skipped: Record<string, number>): boolean {
   if (!options.include_all && unknownRecordBoolean(record, 'training_candidate') !== true) {
     incrementSkipped(skipped, 'not_training_candidate')
@@ -611,17 +792,26 @@ export function buildQueryDatasetFromTraces(lines: string[], options: QueryDatas
     ? undefined
     : canonicalUint64(options.fusion_parent_model_id, 'query dataset fusion parent model id')
   const normalizedOptions = {...options, model_id: modelId}
+  const baseModelHash = hash256(options.base_model_hash)
+  const tokenizerHash = hash256(options.tokenizer_hash)
+  if (options.rlvr_only && (!baseModelHash || !tokenizerHash)) {
+    throw new Error('RLVR dataset packing requires immutable base model and tokenizer hashes')
+  }
   const minUsefulBps = Number(options.min_useful_bps ?? 8500)
   const maxExamples = Number(options.max_examples ?? 0)
   const asOfEpochSec = Number(options.as_of_epoch_sec ?? Math.floor(Date.now() / 1000))
   const examples: QueryDatasetExample[] = []
   const skipped: Record<string, number> = {}
   const promptHashes: string[] = []
+  const responseHashes: string[] = []
   const traceHashes: string[] = []
   const exampleHashes: string[] = []
   const campaignIds: Uint64String[] = []
   const consentPolicyHashes: string[] = []
   const consentReceiptHashes: string[] = []
+  const oracleEvidenceHashes: string[] = []
+  const verifierSpecHashes: string[] = []
+  const consentExpirations: number[] = []
   const seenExamples = new Set<string>()
 
   for (const line of lines) {
@@ -652,6 +842,24 @@ export function buildQueryDatasetFromTraces(lines: string[], options: QueryDatas
     const consent = parseActiveDataConsent(record, asOfEpochSec)
     if (!consent) {
       incrementSkipped(skipped, 'missing_or_inactive_consent')
+      continue
+    }
+    const outcome = acceptedOutcomeEvidence(record)
+    if (outcome === null) {
+      incrementSkipped(skipped, 'invalid_or_unaccepted_oracle_outcome')
+      continue
+    }
+    if (options.rlvr_only && !outcome) {
+      incrementSkipped(skipped, 'accepted_oracle_outcome_required')
+      continue
+    }
+    if (!options.rlvr_only && outcome) {
+      incrementSkipped(skipped, 'explicit_rlvr_mode_required')
+      continue
+    }
+    if (outcome &&
+        (consent.scope_bits & AI_DATA_RLVR_REQUIRED_SCOPES) !== AI_DATA_RLVR_REQUIRED_SCOPES) {
+      incrementSkipped(skipped, 'outcome_feedback_consent_required')
       continue
     }
     if (!passedPrivacyReview(record)) {
@@ -710,6 +918,12 @@ export function buildQueryDatasetFromTraces(lines: string[], options: QueryDatas
       consent_receipt_hash: consent.receipt_hash,
       consent_expires_at: consent.expires_at,
       privacy_review_hash: privacyReviewHash(record),
+      outcome_payload_hash: outcome?.payload_hash,
+      outcome_evidence_hash: outcome?.evidence_hash,
+      verifier_spec_hash: outcome?.verifier_spec_hash,
+      oracle: outcome?.oracle,
+      svc_check_id: outcome?.svc_check_id,
+      verifier_id: outcome?.verifier_id,
     }
     const rejected = corrected ? firstText(record, ['rejected_output', 'output']) : firstText(record, ['rejected_output'])
     const example: QueryDatasetExample = {
@@ -729,11 +943,17 @@ export function buildQueryDatasetFromTraces(lines: string[], options: QueryDatas
     const exampleHash = jsonLineHash(example)
     examples.push(example)
     promptHashes.push(promptHash)
+    responseHashes.push(sha256Bytes(Buffer.from(completion)))
     traceHashes.push(traceHash)
     exampleHashes.push(exampleHash)
     campaignIds.push(consent.campaign_id)
     consentPolicyHashes.push(consent.policy_hash)
     consentReceiptHashes.push(consent.receipt_hash)
+    consentExpirations.push(consent.expires_at)
+    if (outcome) {
+      oracleEvidenceHashes.push(outcome.evidence_hash)
+      verifierSpecHashes.push(outcome.verifier_spec_hash)
+    }
   }
 
   const datasetJsonl = examples.map((example) => canonicalJson(example)).join('')
@@ -757,10 +977,27 @@ export function buildQueryDatasetFromTraces(lines: string[], options: QueryDatas
     example_count: examples.length,
     example_hashes: exampleHashes,
     prompt_hashes: [...new Set(promptHashes)],
+    response_hashes: [...new Set(responseHashes)],
     trace_hashes: traceHashes,
     campaign_ids: [...new Set(campaignIds)].sort((left, right) => compareUint64(left, right, 'campaign id')),
     consent_policy_hashes: [...new Set(consentPolicyHashes)].sort(),
     consent_receipt_hashes: [...new Set(consentReceiptHashes)].sort(),
+    oracle_evidence_hashes: [...new Set(oracleEvidenceHashes)].sort(),
+    verifier_spec_hashes: [...new Set(verifierSpecHashes)].sort(),
+    reward_policy: oracleEvidenceHashes.length > 0 ? {
+      authority: 'svcmarket-oracle',
+      sealed_verifiers_only: true,
+      requires_outcome_signal: true,
+      requires_nonzero_service_check: true,
+    } : undefined,
+    retention_policy: {
+      not_after_epoch_sec: consentExpirations.length > 0
+        ? Math.min(...consentExpirations)
+        : asOfEpochSec,
+      deletion_required_on_revocation: true,
+    },
+    base_model_hash: baseModelHash,
+    tokenizer_hash: tokenizerHash,
     quality_policy: {
       require_training_candidate: !options.include_all,
       min_useful_bps: minUsefulBps,
@@ -770,7 +1007,9 @@ export function buildQueryDatasetFromTraces(lines: string[], options: QueryDatas
     },
     privacy_policy: {
       requires_active_versioned_consent: true,
-      required_scopes: ['training', 'prompt', 'response'],
+      required_scopes: oracleEvidenceHashes.length > 0
+        ? ['training', 'prompt', 'response', 'feedback']
+        : ['training', 'prompt', 'response'],
       requires_pii_review: true,
       excludes_direct_user_identifiers_from_manifest: true,
       requires_privacy_reviewed_prompt: true,
@@ -2043,6 +2282,19 @@ function collectOption(value: string, previous: string[]): string[] {
   return previous
 }
 
+function parseBatchSample(value: string): {infer_id: Uint64String; evidence_hash: string} {
+  const separator = value.indexOf(':')
+  if (separator <= 0 || separator === value.length - 1) {
+    throw new Error('--sample must use infer_id:evidence_hash')
+  }
+  const inferId = positiveUint64(value.slice(0, separator), 'sample inference id')
+  const evidenceHash = hash256(value.slice(separator + 1))
+  if (!evidenceHash) {
+    throw new Error('sample evidence hash must be lowercase SHA-256')
+  }
+  return {infer_id: inferId, evidence_hash: evidenceHash}
+}
+
 async function readTraceLines(input: string, allTraces?: boolean): Promise<{trace_file: string; lines: string[]}> {
   let traceFile = path.resolve(input)
   const stat = await fs.stat(traceFile)
@@ -2064,6 +2316,25 @@ export function validateQueryDatasetManifest(parsed: unknown, label = 'manifest'
     : []
   const privacy = parsed.privacy_policy
   const scopes = isPlainObject(privacy) ? privacy.required_scopes : undefined
+  const rewardPolicy = parsed.reward_policy
+  const retentionPolicy = parsed.retention_policy
+  const hasRewardPolicy = rewardPolicy !== undefined
+  const carriesRewardEvidence = (
+    (Array.isArray(parsed.oracle_evidence_hashes) && parsed.oracle_evidence_hashes.length > 0) ||
+    (Array.isArray(parsed.verifier_spec_hashes) && parsed.verifier_spec_hashes.length > 0)
+  )
+  const validRewardPolicy = !hasRewardPolicy || (
+    isPlainObject(rewardPolicy) &&
+    rewardPolicy.authority === 'svcmarket-oracle' &&
+    rewardPolicy.sealed_verifiers_only === true &&
+    rewardPolicy.requires_outcome_signal === true &&
+    rewardPolicy.requires_nonzero_service_check === true &&
+    hashArray(parsed.oracle_evidence_hashes) &&
+    hashArray(parsed.verifier_spec_hashes) &&
+    Boolean(hash256(parsed.base_model_hash)) &&
+    Boolean(hash256(parsed.tokenizer_hash)) &&
+    Array.isArray(scopes) && scopes.includes('feedback')
+  )
   if (
     !hash256(parsed.dataset_hash) ||
     parsed.dataset_format !== 'chat_messages_jsonl' ||
@@ -2074,16 +2345,22 @@ export function validateQueryDatasetManifest(parsed: unknown, label = 'manifest'
     !hashArray(parsed.trace_hashes) ||
     parsed.trace_hashes.length !== Number(parsed.example_count) ||
     !hashArray(parsed.prompt_hashes) ||
+    !hashArray(parsed.response_hashes) ||
     campaignIds.length === 0 ||
     campaignIds.some((entry) => !entry) ||
     !hashArray(parsed.consent_policy_hashes) ||
     !hashArray(parsed.consent_receipt_hashes) ||
     !isPlainObject(privacy) ||
+    !isPlainObject(retentionPolicy) ||
+    !positiveInteger(retentionPolicy.not_after_epoch_sec) ||
+    retentionPolicy.deletion_required_on_revocation !== true ||
     privacy.requires_active_versioned_consent !== true ||
     privacy.requires_pii_review !== true ||
     privacy.encrypted_at_rest_required !== true ||
     !Array.isArray(scopes) ||
-    !['training', 'prompt', 'response'].every((scope) => scopes.includes(scope))
+    !['training', 'prompt', 'response'].every((scope) => scopes.includes(scope)) ||
+    carriesRewardEvidence !== hasRewardPolicy ||
+    !validRewardPolicy
   ) {
     throw new Error(`incomplete consent-aware query dataset manifest: ${label}`)
   }
@@ -2118,6 +2395,7 @@ function queryDatasetArtifactMetadata(input: {
   metadata?: Record<string, unknown>
 }): Record<string, unknown> {
   return {
+    ...input.metadata,
     kind: 'dataset',
     format: 'harbor.ai.query-dataset.v2',
     dataset_format: 'chat_messages_jsonl',
@@ -2132,13 +2410,94 @@ function queryDatasetArtifactMetadata(input: {
     campaign_ids: input.manifest?.campaign_ids,
     consent_policy_hashes: input.manifest?.consent_policy_hashes,
     consent_receipt_count: input.manifest?.consent_receipt_hashes?.length,
+    base_model_hash: input.manifest?.base_model_hash,
+    tokenizer_hash: input.manifest?.tokenizer_hash,
+    retention_policy: input.manifest?.retention_policy,
+    oracle_evidence_hashes: input.manifest?.oracle_evidence_hashes,
+    verifier_spec_hashes: input.manifest?.verifier_spec_hashes,
+    reward_policy: input.manifest?.reward_policy,
     encrypted_at_rest_required: true,
-    ...input.metadata,
   }
 }
 
 function defaultQueryDatasetManifestPath(output: string): string {
   return /\.jsonl$/i.test(output) ? output.replace(/\.jsonl$/i, '.manifest.json') : `${output}.manifest.json`
+}
+
+function addRlvrCommand(ai: Command): void {
+  const rlvr = new Command('rlvr')
+  rlvr.description('Build sealed, oracle-approved GRPO training recipes')
+  rlvr
+    .command('recipe <base_model>')
+    .description('Create a canonical harbor.ai.rlvr-recipe.v1 artifact')
+    .requiredOption('--base-model-hash <hash>', 'immutable base model revision hash')
+    .requiredOption('--tokenizer-hash <hash>', 'immutable tokenizer hash')
+    .requiredOption('--dataset-hash <hash>', 'canonical plaintext query-dataset hash')
+    .option('--verifier <file>', 'sealed oracle-approved verifier JSON; repeat per verifier', collectOption, [])
+    .option('--seed <seed>', 'deterministic random seed', '7')
+    .option('--group-size <count>', 'rollouts per prompt', '4')
+    .option('--batch-size <count>', 'prompt batch size', '1')
+    .option('--steps <count>', 'bounded optimizer steps', '1')
+    .option('--max-prompt-tokens <count>', 'maximum prompt tokens', '128')
+    .option('--max-completion-tokens <count>', 'maximum generated tokens', '32')
+    .option('--clip-epsilon <value>', 'GRPO ratio clipping epsilon', '0.2')
+    .option('--kl-coefficient <value>', 'reference-model KL coefficient', '0.02')
+    .option('--learning-rate <value>', 'AdamW learning rate', '0.00001')
+    .option('--lora-layers <count>', 'number of final transformer layers adapted', '1')
+    .option('-o, --output <path>', 'recipe JSON output path', 'rlvr-recipe.json')
+    .option('--force', 'overwrite output file')
+    .option('--json', 'print JSON')
+    .action(async (baseModel: string, options: {
+      baseModelHash: string
+      tokenizerHash: string
+      datasetHash: string
+      verifier?: string[]
+      seed?: string
+      groupSize?: string
+      batchSize?: string
+      steps?: string
+      maxPromptTokens?: string
+      maxCompletionTokens?: string
+      clipEpsilon?: string
+      klCoefficient?: string
+      learningRate?: string
+      loraLayers?: string
+      output?: string
+      force?: boolean
+      json?: boolean
+    }) => {
+      if (!options.verifier?.length) {
+        throw new Error('at least one --verifier JSON file is required')
+      }
+      const verifiers: RlvrVerifierSpec[] = []
+      for (const verifierFile of options.verifier) {
+        const parsed = JSON.parse(await fs.readFile(path.resolve(verifierFile), 'utf8')) as unknown
+        if (!isPlainObject(parsed)) {
+          throw new Error(`sealed verifier must be a JSON object: ${verifierFile}`)
+        }
+        verifiers.push(parsed as unknown as RlvrVerifierSpec)
+      }
+      const result = buildRlvrRecipe({
+        base_model: baseModel,
+        base_model_hash: options.baseModelHash,
+        tokenizer_hash: options.tokenizerHash,
+        dataset_hash: options.datasetHash,
+        seed: Number(options.seed ?? 7),
+        group_size: Number(options.groupSize ?? 4),
+        batch_size: Number(options.batchSize ?? 1),
+        steps: Number(options.steps ?? 1),
+        max_prompt_tokens: Number(options.maxPromptTokens ?? 128),
+        max_completion_tokens: Number(options.maxCompletionTokens ?? 32),
+        clip_epsilon: Number(options.clipEpsilon ?? 0.2),
+        kl_coefficient: Number(options.klCoefficient ?? 0.02),
+        learning_rate: Number(options.learningRate ?? 1e-5),
+        lora_layers: Number(options.loraLayers ?? 1),
+        verifiers,
+      })
+      const output = await writeOutputFile(options.output ?? 'rlvr-recipe.json', result.recipe_json, options.force)
+      printResult({ok: true, output, recipe_hash: result.recipe_hash, recipe: result.recipe}, options.json)
+    })
+  ai.addCommand(rlvr)
 }
 
 function addDataCommand(ai: Command): void {
@@ -2152,6 +2511,7 @@ function addDataCommand(ai: Command): void {
     .option('--include-all', 'include traces even when training_candidate is false')
     .option('--include-low-score', 'allow captured low-score outputs without corrections')
     .option('--include-unscored', 'allow captured unscored outputs without corrections')
+    .option('--rlvr', 'pack only oracle-approved outcome samples with consent mask 23')
     .option('--min-useful-bps <bps>', 'minimum score for captured outputs without explicit correction', '8500')
     .option('--max-examples <count>', 'maximum examples to include', '0')
     .option('--contributor <account>', 'dataset contributor account for manifest attribution')
@@ -2159,6 +2519,8 @@ function addDataCommand(ai: Command): void {
     .option('--user <account>', 'only include traces for one user/account')
     .option('--model-id <id>', 'only include traces for one model id')
     .option('--base-model-id <id>', 'base model id for downstream training metadata')
+    .option('--base-model-hash <hash>', 'immutable base model hash; required with --rlvr')
+    .option('--tokenizer-hash <hash>', 'immutable tokenizer hash; required with --rlvr')
     .option('--expert-role <role>', 'expert role for downstream distributed expert training')
     .option('--fusion-parent-model-id <id>', 'fusion parent model id for expert metadata')
     .option('-o, --output <path>', 'dataset JSONL output path', 'query-dataset.jsonl')
@@ -2170,6 +2532,7 @@ function addDataCommand(ai: Command): void {
       includeAll?: boolean
       includeLowScore?: boolean
       includeUnscored?: boolean
+      rlvr?: boolean
       minUsefulBps?: string
       maxExamples?: string
       contributor?: string
@@ -2177,6 +2540,8 @@ function addDataCommand(ai: Command): void {
       user?: string
       modelId?: string
       baseModelId?: string
+      baseModelHash?: string
+      tokenizerHash?: string
       expertRole?: string
       fusionParentModelId?: string
       output?: string
@@ -2191,6 +2556,8 @@ function addDataCommand(ai: Command): void {
         user: options.user,
         model_id: options.modelId ? positiveUint64(options.modelId, 'model id') : undefined,
         base_model_id: options.baseModelId ? positiveUint64(options.baseModelId, 'base model id') : undefined,
+        base_model_hash: options.baseModelHash,
+        tokenizer_hash: options.tokenizerHash,
         expert_role: options.expertRole,
         fusion_parent_model_id: options.fusionParentModelId
           ? positiveUint64(options.fusionParentModelId, 'fusion parent model id')
@@ -2199,6 +2566,7 @@ function addDataCommand(ai: Command): void {
         include_all: Boolean(options.includeAll),
         include_low_score: Boolean(options.includeLowScore),
         include_unscored: Boolean(options.includeUnscored),
+        rlvr_only: Boolean(options.rlvr),
         max_examples: Number(options.maxExamples ?? 0),
       })
       if (pack.examples.length === 0) {
@@ -2356,6 +2724,9 @@ function addDataCommand(ai: Command): void {
     }
     const recipientKey = parseVaultPublicKey(await fs.readFile(recipientPublicKey as string, 'utf8'))
     const createdAt = Math.floor(Date.now() / 1000)
+    if (createdAt + ttlSec > manifest.retention_policy.not_after_epoch_sec) {
+      throw new Error('dataset storage TTL exceeds the consent-bound retention deadline')
+    }
     const governed: GovernedStorageEncryption = {
       recipientPublicKey: recipientKey.publicKey,
       context: {
@@ -2432,15 +2803,173 @@ function addDataCommand(ai: Command): void {
 
   addTxOptions(
     data
-      .command('contribute <contributor> <tune_id> <dataset_artifact_id>')
-      .description(`Compatibility-disabled contribdata alias: ${DISABLED_DATA_CONTRIBUTION}`)
+      .command('contribute <curator> <campaign_id> <dataset_artifact_id>')
+      .description('Create and seal a Vault-backed distillation batch for a governed query dataset')
       .option('-c, --contract <account>', 'Harbor AI contract account', AI_CONTRACT)
-      .option('--reward-weight <bps>', 'relative data reward weight in basis points', '10000')
-      .option('--manifest-hash <hash>', 'query dataset manifest hash to preserve in contribution metadata')
-      .option('--metadata <json>', 'additional contribution metadata JSON object')
-      .option('--dry-run', 'print the planned action without broadcasting')
-  ).action(async () => {
-    throw new Error(`contribdata is compatibility-disabled: ${DISABLED_DATA_CONTRIBUTION}`)
+      .option('--owner <account>', 'campaign owner; defaults to curator')
+      .option('--sample <infer_id:evidence_hash>', 'accepted sample and independent evidence commitment; repeat per sample', collectOption, [])
+      .requiredOption('--dataset-object-id <id>', 'sanitized encrypted HarborStore object id')
+      .requiredOption('--dataset-policy-id <id>', 'sanitized HarborVault policy id')
+      .requiredOption('--transform-id <id>', 'accepted HarborVault aggregate lineage id')
+      .requiredOption('--recipe-artifact-id <id>', 'public sealed RLVR recipe artifact id')
+      .requiredOption('--dataset-hash <hash>', 'encrypted dataset content hash')
+      .requiredOption('--input-lineage-hash <hash>', 'canonical accepted-input lineage root')
+      .requiredOption('--recipe-hash <hash>', 'sealed RLVR recipe hash')
+      .option('--manifest-hash <hash>', 'query dataset manifest hash to preserve in batch metadata')
+      .option('--metadata <json>', 'additional batch metadata JSON object')
+      .option('--dry-run', 'print the planned action sequence without broadcasting')
+  ).action(async (curator: string, campaignIdInput: string, datasetArtifactIdInput: string, options: {
+    contract?: string
+    owner?: string
+    sample?: string[]
+    datasetObjectId: string
+    datasetPolicyId: string
+    transformId: string
+    recipeArtifactId: string
+    datasetHash: string
+    inputLineageHash: string
+    recipeHash: string
+    manifestHash?: string
+    metadata?: string
+    dryRun?: boolean
+    url?: string
+    actor?: string
+    permission?: string
+    key?: string
+    auth?: string
+    json?: boolean
+    expiration?: string
+  }) => {
+    const contract = options.contract ?? AI_CONTRACT
+    const owner = options.owner ?? curator
+    if (owner !== curator) {
+      throw new Error('v1 batch contribution requires campaign owner and curator to be the same signer')
+    }
+    const campaignId = positiveUint64(campaignIdInput, 'campaign id')
+    const datasetArtifactId = positiveUint64(datasetArtifactIdInput, 'dataset artifact id')
+    const datasetObjectId = positiveUint64(options.datasetObjectId, 'dataset object id')
+    const datasetPolicyId = positiveUint64(options.datasetPolicyId, 'dataset policy id')
+    const transformId = positiveUint64(options.transformId, 'transform id')
+    const recipeArtifactId = positiveUint64(options.recipeArtifactId, 'recipe artifact id')
+    const datasetHash = hash256(options.datasetHash)
+    const inputLineageHash = hash256(options.inputLineageHash)
+    const recipeHash = hash256(options.recipeHash)
+    const manifestHash = options.manifestHash ? hash256(options.manifestHash) : undefined
+    if (!datasetHash || !inputLineageHash || !recipeHash || (options.manifestHash && !manifestHash)) {
+      throw new Error('dataset, input-lineage, recipe, and optional manifest hashes must be lowercase SHA-256')
+    }
+    const samples = (options.sample ?? []).map(parseBatchSample)
+    if (samples.length === 0) {
+      throw new Error('at least one --sample infer_id:evidence_hash is required')
+    }
+    const uniqueInferences = new Set(samples.map((sample) => sample.infer_id))
+    if (uniqueInferences.size !== samples.length) {
+      throw new Error('duplicate sample inference id')
+    }
+    const suppliedMetadata = options.metadata ? parseObjectJson(options.metadata, 'metadata') : {}
+    const metadata = JSON.stringify({
+      ...suppliedMetadata,
+      format: 'harbor.ai.rlvr-batch.v1',
+      algorithm: 'grpo',
+      dataset_artifact_id: datasetArtifactId,
+      manifest_hash: manifestHash,
+    })
+    const actionData = (batchId: string) => [
+      {
+        contract,
+        action: 'openbatch',
+        data: {owner, campaign_id: campaignId, curator, metadata},
+      },
+      ...samples.map((sample) => ({
+        contract,
+        action: 'addsample',
+        data: {curator, batch_id: batchId, ...sample},
+      })),
+      {
+        contract,
+        action: 'setbatchspec',
+        data: {
+          curator,
+          batch_id: batchId,
+          dataset_object_id: datasetObjectId,
+          dataset_policy_id: datasetPolicyId,
+          transform_id: transformId,
+          recipe_artifact_id: recipeArtifactId,
+          dataset_hash: datasetHash,
+          input_lineage_hash: inputLineageHash,
+          recipe_hash: recipeHash,
+          metadata,
+        },
+      },
+      {
+        contract,
+        action: 'sealbatch',
+        data: {curator, batch_id: batchId, dataset_artifact_id: datasetArtifactId},
+      },
+    ]
+    if (options.dryRun) {
+      printResult({
+        dry_run: true,
+        modern_vault_backed_lifecycle: true,
+        actions: actionData('<new_batch_id>'),
+      }, options.json)
+      return
+    }
+
+    const actorOptions = {...options, actor: options.actor ?? owner}
+    const beforeRows = await getAllTableRows<Record<string, unknown>>(contract, 'distbatches', {
+      scope: contract,
+      url: options.url,
+    })
+    const beforeIds = new Set(beforeRows.map((row) => canonicalUint64(row.id, 'batch id')))
+    const openResult = await pushAction({
+      ...actionData('<new_batch_id>')[0],
+      url: options.url,
+      actor: actorOptions.actor,
+      permission: actorOptions.permission,
+      key: actorOptions.key,
+      authorization: actorOptions.auth,
+      expiration: actorOptions.expiration,
+    })
+    const returnedBatchId = actionUint64Return(openResult, contract, 'openbatch')
+    const afterRows = await getAllTableRows<Record<string, unknown>>(contract, 'distbatches', {
+      scope: contract,
+      url: options.url,
+    })
+    const created = afterRows.filter((row) => {
+      const id = canonicalUint64(row.id, 'batch id')
+      return !beforeIds.has(id) &&
+        canonicalUint64(row.campaign_id, 'campaign id') === campaignId &&
+        row.curator === curator
+    })
+    const batchId = returnedBatchId ?? (created.length === 1
+      ? canonicalUint64(created[0].id, 'batch id')
+      : undefined)
+    if (!batchId || (created.length > 0 && !created.some((row) => canonicalUint64(row.id, 'batch id') === batchId))) {
+      throw new Error('could not resolve the newly opened governed distillation batch')
+    }
+    const followups = []
+    for (const action of actionData(batchId).slice(1)) {
+      followups.push(await serializeAction({
+        ...action,
+        url: options.url,
+        actor: actorOptions.actor,
+        permission: actorOptions.permission,
+        key: actorOptions.key,
+        authorization: actorOptions.auth,
+        expiration: actorOptions.expiration,
+      }))
+    }
+    const sealedResult = await transactActions(actorOptions, followups)
+    printResult({
+      ok: true,
+      campaign_id: campaignId,
+      batch_id: batchId,
+      dataset_artifact_id: datasetArtifactId,
+      sample_count: samples.length,
+      open_result: openResult,
+      sealed_result: sealedResult,
+    }, options.json)
   })
 
   ai.addCommand(data)
@@ -2851,6 +3380,7 @@ export function createAiCommand(): Command {
   ai.description('Manage Harbor AI models, tuning, training, inference, and routing')
   addOfferCommand(ai)
   addTrustCommand(ai)
+  addRlvrCommand(ai)
   addDataCommand(ai)
   addFusionCommand(ai)
 

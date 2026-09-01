@@ -166,10 +166,25 @@ export interface QueryDatasetManifest {
     example_count: number;
     example_hashes: string[];
     prompt_hashes: string[];
+    response_hashes: string[];
     trace_hashes: string[];
     campaign_ids: Uint64String[];
     consent_policy_hashes: string[];
     consent_receipt_hashes: string[];
+    oracle_evidence_hashes?: string[];
+    verifier_spec_hashes?: string[];
+    reward_policy?: {
+        authority: 'svcmarket-oracle';
+        sealed_verifiers_only: true;
+        requires_outcome_signal: true;
+        requires_nonzero_service_check: true;
+    };
+    retention_policy: {
+        not_after_epoch_sec: number;
+        deletion_required_on_revocation: true;
+    };
+    base_model_hash?: string;
+    tokenizer_hash?: string;
     quality_policy: Record<string, unknown>;
     privacy_policy: Record<string, unknown>;
     training_metadata?: Record<string, unknown>;
@@ -197,11 +212,51 @@ export interface QueryDatasetPackOptions {
     include_unscored?: boolean;
     max_examples?: number;
     as_of_epoch_sec?: number;
+    rlvr_only?: boolean;
+    base_model_hash?: string;
+    tokenizer_hash?: string;
 }
+export interface RlvrVerifierSpec {
+    id: string;
+    type: 'exact_text' | 'numeric_tolerance' | 'json_constraints' | 'token_sequence_similarity';
+    oracle: string;
+    oracle_evidence_hash: string;
+    svc_check_id: Uint64String;
+    expected?: string | number;
+    tolerance?: number;
+    required?: Record<string, string | number | boolean | null>;
+}
+export interface RlvrRecipe {
+    format: 'harbor.ai.rlvr-recipe.v1';
+    algorithm: 'grpo';
+    base_model: string;
+    base_model_hash: string;
+    tokenizer_hash: string;
+    dataset_hash: string;
+    oracle_evidence_root: string;
+    seed: number;
+    group_size: number;
+    batch_size: number;
+    steps: number;
+    max_prompt_tokens: number;
+    max_completion_tokens: number;
+    clip_epsilon: number;
+    kl_coefficient: number;
+    learning_rate: number;
+    lora_layers: number;
+    verifiers: RlvrVerifierSpec[];
+}
+export declare function buildRlvrRecipe(input: Omit<RlvrRecipe, 'format' | 'algorithm' | 'oracle_evidence_root'>): {
+    recipe: RlvrRecipe;
+    recipe_json: string;
+    recipe_hash: string;
+};
 export declare const AI_DATA_SCOPE_TRAINING = 1;
 export declare const AI_DATA_SCOPE_PROMPT = 2;
 export declare const AI_DATA_SCOPE_RESPONSE = 4;
+export declare const AI_DATA_SCOPE_FEEDBACK = 16;
 export declare const AI_DATA_REQUIRED_SCOPES: number;
+export declare const AI_DATA_RLVR_REQUIRED_SCOPES: number;
 export interface AiDataConsentReceipt {
     campaign_id: Uint64String;
     program_id: Uint64String;
