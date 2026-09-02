@@ -361,8 +361,11 @@ them. `harbor ai data pack <trace_dir>` reads `candidates.jsonl`, keeps explicit
 corrections/accepted answers plus high-scoring captured outputs, and writes a
 chat JSONL dataset plus a canonical `harbor.ai.query-dataset.v2` manifest.
 Every included trace must carry an active, unrevoked, versioned consent receipt
-with training, prompt, and response scopes and a successful PII-review hash. A bare
-`training_candidate` flag is never sufficient, even with `--include-all`.
+with training, prompt, and response scopes and a successful PII-review hash. An
+outcome-bearing RLVR trace additionally requires feedback consent (mask `23` in
+total), an accepted nonzero SvcMarket oracle check, and committed oracle/verifier
+evidence. A bare `training_candidate` flag is never sufficient, even with
+`--include-all`.
 Direct user identifiers are omitted from example provenance; policy, campaign,
 and consent receipt hashes remain auditable.
 
@@ -374,8 +377,11 @@ governed offline workflow:
 
 ```sh
 harbor ai data pack ~/.harbor/ai-traces \
+  --rlvr \
   --contributor myaccount \
   --base-model-id 1 \
+  --base-model-hash <base_model_hash> \
+  --tokenizer-hash <tokenizer_hash> \
   --expert-role code \
   --output query-dataset.jsonl \
   --manifest-output query-dataset.manifest.json
@@ -389,13 +395,33 @@ harbor ai data register myaccount query-dataset.jsonl \
   --backend walrus
 ```
 
-The `ai data contribute`, `ai tune contribute-data`, and `ai tune reward-data`
-commands are compatibility-disabled because their on-chain `contribdata` and
-`rewarddata` actions intentionally reject legacy contribution/reward flows.
-An accepted tune fixes its dataset or public-policy artifact when it is
-proposed; production collection and rewards then use the explicit
-Vault-backed opt-in, consent binding, sample review, batching, and staged reward
-lifecycle below.
+The legacy `ai tune contribute-data` and `ai tune reward-data` wrappers remain
+compatibility-disabled. `ai data contribute` now uses the modern Vault-backed
+batch lifecycle instead of the rejected legacy `contribdata` action. Build the
+sealed recipe, register it as the campaign's recipe artifact, then prepare and
+seal a reviewed batch:
+
+```sh
+harbor ai rlvr recipe mlx-community/gemma-3-270m-4bit \
+  --base-model-hash <base_model_hash> \
+  --tokenizer-hash <tokenizer_hash> \
+  --dataset-hash <dataset_hash> \
+  --verifier verifier.json \
+  --output rlvr-recipe.json
+harbor ai data contribute myaccount <campaign_id> <dataset_artifact_id> \
+  --sample <infer_id>:<accepted_evidence_hash> \
+  --dataset-object-id <sanitized_object_id> \
+  --dataset-policy-id <sanitized_policy_id> \
+  --transform-id <accepted_lineage_id> \
+  --recipe-artifact-id <recipe_artifact_id> \
+  --dataset-hash <dataset_hash> \
+  --input-lineage-hash <lineage_root> \
+  --recipe-hash <recipe_hash>
+```
+
+The four supported verifier types are exact text, numeric tolerance, bounded
+JSON constraints, and token-sequence similarity. Verifiers are sealed and
+oracle-approved; no command or arbitrary reward code is accepted.
 
 For a challengeable inference, generate a fresh private 32-byte
 `selection_reveal` and commit
