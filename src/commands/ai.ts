@@ -275,6 +275,13 @@ export interface QueryDatasetManifest {
   consent_receipt_hashes: string[]
   oracle_evidence_hashes?: string[]
   verifier_spec_hashes?: string[]
+  network_rollout_infer_ids?: Uint64String[]
+  network_rollout_providers?: string[]
+  rollout_policy?: {
+    source: 'network'
+    requires_settled_delivery: true
+    requires_batch_input_chain_verification: true
+  }
   reward_policy?: {
     authority: 'svcmarket-oracle'
     sealed_verifiers_only: true
@@ -350,6 +357,9 @@ export interface RlvrRecipe {
   kl_coefficient: number
   learning_rate: number
   lora_layers: number
+  rollout_source?: 'local' | 'network'
+  network_model_id?: Uint64String
+  minimum_rollout_providers?: number
   verifiers: RlvrVerifierSpec[]
 }
 
@@ -435,6 +445,23 @@ export function buildRlvrRecipe(input: Omit<RlvrRecipe, 'format' | 'algorithm' |
     learning_rate: boundedNumber(input.learning_rate, 'learning rate', 1e-8, 1e-2),
     lora_layers: boundedInteger(input.lora_layers, 'LoRA layers', 1, 64),
     verifiers,
+  }
+  const rolloutSource = input.rollout_source ?? 'local'
+  if (rolloutSource !== 'local' && rolloutSource !== 'network') {
+    throw new Error('rollout source must be local or network')
+  }
+  recipe.rollout_source = rolloutSource
+  if (rolloutSource === 'network') {
+    recipe.network_model_id = positiveUint64(input.network_model_id, 'network rollout model id')
+    recipe.minimum_rollout_providers = boundedInteger(
+      input.minimum_rollout_providers ?? 2,
+      'minimum rollout providers',
+      2,
+      recipe.group_size,
+    )
+    if (recipe.steps !== 1) {
+      throw new Error('network rollout recipes require exactly one optimizer step per sealed rollout round')
+    }
   }
   const recipeJson = canonicalJson(recipe)
   return {recipe, recipe_json: recipeJson, recipe_hash: sha256Bytes(Buffer.from(recipeJson))}
@@ -811,6 +838,8 @@ export function buildQueryDatasetFromTraces(lines: string[], options: QueryDatas
   const consentReceiptHashes: string[] = []
   const oracleEvidenceHashes: string[] = []
   const verifierSpecHashes: string[] = []
+  const networkRolloutInferIds: Uint64String[] = []
+  const networkRolloutProviders: string[] = []
   const consentExpirations: number[] = []
   const seenExamples = new Set<string>()
 
@@ -882,6 +911,18 @@ export function buildQueryDatasetFromTraces(lines: string[], options: QueryDatas
       continue
     }
 
+    const rolloutInferId = optionalPositiveUint64(record.infer_id, 'network rollout inference id')
+    const rolloutProvider = unknownRecordString(record, 'selected_provider') ??
+      nestedString(record, 'signal', 'provider')
+    const rolloutModelId = traceModelId(record)
+    const settlementBroadcast = unknownRecordBoolean(record, 'settlement_broadcast')
+    const settlementTx = hash256(record.settlement_tx)
+    if (options.rlvr_only &&
+        (!rolloutInferId || !rolloutProvider || !rolloutModelId || settlementBroadcast !== true)) {
+      incrementSkipped(skipped, 'settled_network_rollout_required')
+      continue
+    }
+
     const supervised = Boolean(corrected || accepted)
     const score = traceUsefulScore(record)
     if (!supervised && !options.include_low_score) {
@@ -924,6 +965,15 @@ export function buildQueryDatasetFromTraces(lines: string[], options: QueryDatas
       oracle: outcome?.oracle,
       svc_check_id: outcome?.svc_check_id,
       verifier_id: outcome?.verifier_id,
+      network_rollout: options.rlvr_only ? {
+        format: 'harbor.ai.rlvr-network-rollout.v1',
+        infer_id: rolloutInferId,
+        provider: rolloutProvider,
+        model_id: rolloutModelId,
+        result_hash: sha256Bytes(Buffer.from(completion)),
+        settled: true,
+        ...(settlementTx ? {settlement_tx: settlementTx} : {}),
+      } : undefined,
     }
     const rejected = corrected ? firstText(record, ['rejected_output', 'output']) : firstText(record, ['rejected_output'])
     const example: QueryDatasetExample = {
@@ -934,7 +984,11 @@ export function buildQueryDatasetFromTraces(lines: string[], options: QueryDatas
       metadata,
       rejected_completion: rejected && rejected !== completion ? rejected : undefined,
     }
-    const dedupeHash = jsonLineHash({messages: example.messages, rejected_completion: example.rejected_completion})
+    const dedupeHash = jsonLineHash({
+      messages: example.messages,
+      rejected_completion: example.rejected_completion,
+      network_rollout_infer_id: options.rlvr_only ? rolloutInferId : undefined,
+    })
     if (seenExamples.has(dedupeHash)) {
       incrementSkipped(skipped, 'duplicate_example')
       continue
@@ -953,6 +1007,10 @@ export function buildQueryDatasetFromTraces(lines: string[], options: QueryDatas
     if (outcome) {
       oracleEvidenceHashes.push(outcome.evidence_hash)
       verifierSpecHashes.push(outcome.verifier_spec_hash)
+    }
+    if (options.rlvr_only && rolloutInferId && rolloutProvider) {
+      networkRolloutInferIds.push(rolloutInferId)
+      networkRolloutProviders.push(rolloutProvider)
     }
   }
 
@@ -984,6 +1042,18 @@ export function buildQueryDatasetFromTraces(lines: string[], options: QueryDatas
     consent_receipt_hashes: [...new Set(consentReceiptHashes)].sort(),
     oracle_evidence_hashes: [...new Set(oracleEvidenceHashes)].sort(),
     verifier_spec_hashes: [...new Set(verifierSpecHashes)].sort(),
+    network_rollout_infer_ids: options.rlvr_only
+      ? [...new Set(networkRolloutInferIds)].sort((left, right) =>
+          compareUint64(left, right, 'network rollout inference id'))
+      : undefined,
+    network_rollout_providers: options.rlvr_only
+      ? [...new Set(networkRolloutProviders)].sort()
+      : undefined,
+    rollout_policy: options.rlvr_only ? {
+      source: 'network',
+      requires_settled_delivery: true,
+      requires_batch_input_chain_verification: true,
+    } : undefined,
     reward_policy: oracleEvidenceHashes.length > 0 ? {
       authority: 'svcmarket-oracle',
       sealed_verifiers_only: true,
@@ -2333,7 +2403,21 @@ export function validateQueryDatasetManifest(parsed: unknown, label = 'manifest'
     hashArray(parsed.verifier_spec_hashes) &&
     Boolean(hash256(parsed.base_model_hash)) &&
     Boolean(hash256(parsed.tokenizer_hash)) &&
-    Array.isArray(scopes) && scopes.includes('feedback')
+    Array.isArray(scopes) && scopes.includes('feedback') &&
+    Array.isArray(parsed.network_rollout_infer_ids) &&
+    parsed.network_rollout_infer_ids.length === Number(parsed.example_count) &&
+    parsed.network_rollout_infer_ids.every((entry) =>
+      Boolean(optionalPositiveUint64(entry, 'network rollout inference id'))) &&
+    new Set(parsed.network_rollout_infer_ids.map(String)).size ===
+      parsed.network_rollout_infer_ids.length &&
+    Array.isArray(parsed.network_rollout_providers) &&
+    parsed.network_rollout_providers.length > 0 &&
+    parsed.network_rollout_providers.every((entry) =>
+      typeof entry === 'string' && entry.length > 0 && entry.length <= 13) &&
+    isPlainObject(parsed.rollout_policy) &&
+    parsed.rollout_policy.source === 'network' &&
+    parsed.rollout_policy.requires_settled_delivery === true &&
+    parsed.rollout_policy.requires_batch_input_chain_verification === true
   )
   if (
     !hash256(parsed.dataset_hash) ||
@@ -2416,6 +2500,9 @@ function queryDatasetArtifactMetadata(input: {
     oracle_evidence_hashes: input.manifest?.oracle_evidence_hashes,
     verifier_spec_hashes: input.manifest?.verifier_spec_hashes,
     reward_policy: input.manifest?.reward_policy,
+    network_rollout_infer_ids: input.manifest?.network_rollout_infer_ids,
+    network_rollout_providers: input.manifest?.network_rollout_providers,
+    rollout_policy: input.manifest?.rollout_policy,
     encrypted_at_rest_required: true,
   }
 }
@@ -2444,6 +2531,9 @@ function addRlvrCommand(ai: Command): void {
     .option('--kl-coefficient <value>', 'reference-model KL coefficient', '0.02')
     .option('--learning-rate <value>', 'AdamW learning rate', '0.00001')
     .option('--lora-layers <count>', 'number of final transformer layers adapted', '1')
+    .option('--rollout-source <source>', 'rollout source: network or local', 'network')
+    .option('--network-model-id <id>', 'on-chain model id used for paid network rollouts')
+    .option('--minimum-rollout-providers <count>', 'minimum independent providers per prompt group', '2')
     .option('-o, --output <path>', 'recipe JSON output path', 'rlvr-recipe.json')
     .option('--force', 'overwrite output file')
     .option('--json', 'print JSON')
@@ -2462,6 +2552,9 @@ function addRlvrCommand(ai: Command): void {
       klCoefficient?: string
       learningRate?: string
       loraLayers?: string
+      rolloutSource?: 'local' | 'network'
+      networkModelId?: string
+      minimumRolloutProviders?: string
       output?: string
       force?: boolean
       json?: boolean
@@ -2492,6 +2585,9 @@ function addRlvrCommand(ai: Command): void {
         kl_coefficient: Number(options.klCoefficient ?? 0.02),
         learning_rate: Number(options.learningRate ?? 1e-5),
         lora_layers: Number(options.loraLayers ?? 1),
+        rollout_source: options.rolloutSource ?? 'network',
+        network_model_id: options.networkModelId,
+        minimum_rollout_providers: Number(options.minimumRolloutProviders ?? 2),
         verifiers,
       })
       const output = await writeOutputFile(options.output ?? 'rlvr-recipe.json', result.recipe_json, options.force)
