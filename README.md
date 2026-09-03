@@ -364,7 +364,10 @@ Every included trace must carry an active, unrevoked, versioned consent receipt
 with training, prompt, and response scopes and a successful PII-review hash. An
 outcome-bearing RLVR trace additionally requires feedback consent (mask `23` in
 total), an accepted nonzero SvcMarket oracle check, and committed oracle/verifier
-evidence. A bare `training_candidate` flag is never sufficient, even with
+evidence. It must also identify a paid, settled inference, its selected provider
+account, model id, and result hash. Repeating a prompt therefore preserves each
+independent provider rollout instead of deduplicating equal answers. A bare
+`training_candidate` flag is never sufficient, even with
 `--include-all`.
 Direct user identifiers are omitted from example provenance; policy, campaign,
 and consent receipt hashes remain auditable.
@@ -406,6 +409,9 @@ harbor ai rlvr recipe mlx-community/gemma-3-270m-4bit \
   --base-model-hash <base_model_hash> \
   --tokenizer-hash <tokenizer_hash> \
   --dataset-hash <dataset_hash> \
+  --rollout-source network \
+  --network-model-id <on_chain_model_id> \
+  --minimum-rollout-providers 2 \
   --verifier verifier.json \
   --output rlvr-recipe.json
 harbor ai data contribute myaccount <campaign_id> <dataset_artifact_id> \
@@ -422,6 +428,10 @@ harbor ai data contribute myaccount <campaign_id> <dataset_artifact_id> \
 The four supported verifier types are exact text, numeric tolerance, bounded
 JSON constraints, and token-sequence similarity. Verifiers are sealed and
 oracle-approved; no command or arbitrary reward code is accepted.
+Network recipes require exactly one sealed optimizer round, four completions per
+prompt by default, and at least two independent providers in every group. The
+trainer rejects missing, duplicate, unsettled, wrong-model, or hash-mismatched
+rollout receipts and never replaces them with locally generated completions.
 
 For a challengeable inference, generate a fresh private 32-byte
 `selection_reveal` and commit

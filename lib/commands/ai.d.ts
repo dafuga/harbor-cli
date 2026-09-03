@@ -173,6 +173,13 @@ export interface QueryDatasetManifest {
     consent_receipt_hashes: string[];
     oracle_evidence_hashes?: string[];
     verifier_spec_hashes?: string[];
+    network_rollout_infer_ids?: Uint64String[];
+    network_rollout_providers?: string[];
+    rollout_policy?: {
+        source: 'network';
+        requires_settled_delivery: true;
+        requires_batch_input_chain_verification: true;
+    };
     reward_policy?: {
         authority: 'svcmarket-oracle';
         sealed_verifiers_only: true;
@@ -244,6 +251,9 @@ export interface RlvrRecipe {
     kl_coefficient: number;
     learning_rate: number;
     lora_layers: number;
+    rollout_source?: 'local' | 'network';
+    network_model_id?: Uint64String;
+    minimum_rollout_providers?: number;
     verifiers: RlvrVerifierSpec[];
 }
 export declare function buildRlvrRecipe(input: Omit<RlvrRecipe, 'format' | 'algorithm' | 'oracle_evidence_root'>): {
