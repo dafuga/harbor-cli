@@ -5,6 +5,23 @@ run local service checks, and interact with the Harbor service market contract.
 
 ## Commands
 
+Governed RLVR datasets can be packed with `harbor ai data pack ... --rlvr
+--split train`, `--split validation`, or `--split eval`. Keep prompts disjoint;
+`eval` is the final holdout and must never select a checkpoint. The trainer
+requires both training and evaluation examples. Pack distinct source sets, then
+combine their canonical JSONL before creating the recipe for that exact dataset
+hash. Recompute the dataset manifest and lineage when combining sources; do not
+reuse a component pack's manifest for the combined artifact.
+
+`harbor ai rlvr work-item recipe.json dataset.jsonl --output work.json --json`
+packages the exact sealed recipe and dataset into the trainer's canonical
+wrapper. It checks the dataset commitment, verifier IDs, and disjoint splits.
+The output contains private examples, is created with mode `0600`, and refuses
+to overwrite an existing path. Encrypt it through the governed Vault workflow
+before transport. Console output contains only paths and hashes. Network
+settlement claims are independently checked by the training daemon; this local
+packer does not attest consent, review quorum, or chain settlement.
+
 ```sh
 harbor market opportunities --url http://127.0.0.1:8888
 harbor market opportunities --best --url http://127.0.0.1:8888
