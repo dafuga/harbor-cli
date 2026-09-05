@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import {createHash} from 'node:crypto'
 import fs from 'node:fs/promises'
 import http from 'node:http'
 import type {AddressInfo} from 'node:net'
@@ -13,6 +14,7 @@ import {
   buildFusionRegisterPlan,
   buildQueryDatasetFromTraces,
   buildRlvrRecipe,
+  buildRlvrWorkItem,
   buildTuneAutoVotePlan,
   buildTuneNeeds,
   canonicalJson,
@@ -721,6 +723,16 @@ test('RLVR query datasets require feedback consent and sealed oracle evidence', 
     reward_policy?: {authority?: string; sealed_verifiers_only?: boolean}
   }
   assert.equal(allowed.examples.length, 1)
+  const holdoutOptions = {
+    as_of_epoch_sec: 1_900_000_000, rlvr_only: true,
+    base_model_hash: '7'.repeat(64), tokenizer_hash: '8'.repeat(64), split: 'eval',
+  }
+  const holdout = buildQueryDatasetFromTraces([JSON.stringify(allowedTrace)], holdoutOptions)
+  assert.equal(JSON.parse(holdout.dataset_jsonl).split, 'eval')
+  assert.notEqual(holdout.dataset_hash, allowed.dataset_hash)
+  assert.throws(() => buildQueryDatasetFromTraces([JSON.stringify(allowedTrace)], {
+    ...holdoutOptions, split: 'unknown',
+  } as typeof holdoutOptions), /split/)
   assert.deepEqual(manifest.oracle_evidence_hashes, ['2'.repeat(64)])
   assert.deepEqual(manifest.verifier_spec_hashes, ['3'.repeat(64)])
   assert.ok(manifest.privacy_policy.required_scopes?.includes('feedback'))
@@ -766,6 +778,9 @@ test('RLVR query datasets require feedback consent and sealed oracle evidence', 
 })
 
 test('RLVR recipes canonically bind bounded oracle-approved verifiers', () => {
+  const rlvr = createAiCommand().commands.find((command) => command.name() === 'rlvr')
+  assert.ok(rlvr?.commands.some((command) => command.name() === 'work-item'),
+    'the governed trainer needs a canonical work-item packer')
   const built = buildRlvrRecipe({
     base_model: 'mlx-community/gemma-3-270m-4bit',
     base_model_hash: 'a'.repeat(64),
@@ -796,6 +811,22 @@ test('RLVR recipes canonically bind bounded oracle-approved verifiers', () => {
   assert.equal(built.recipe.oracle_evidence_root.length, 64)
   assert.equal(built.recipe_hash.length, 64)
   assert.equal(canonicalJson(built.recipe), built.recipe_json)
+  const example = (prompt: string, split: string) => ({
+    messages: [{role: 'user', content: prompt}, {role: 'assistant', content: 'HARBOR'}],
+    verifier_id: 'marker', split,
+  })
+  const packageExamples = (examples: unknown[]) => {
+    const dataset = examples.map((value) => canonicalJson(value)).join('')
+    const recipe = buildRlvrRecipe({...built.recipe,
+      dataset_hash: createHash('sha256').update(dataset).digest('hex')}).recipe
+    return buildRlvrWorkItem(recipe, dataset)
+  }
+  const work = JSON.parse(packageExamples([example('train', 'train'), example('unseen', 'eval')]))
+  assert.equal(work.format, 'harbor.ai.rlvr-work-item.v1')
+  assert.equal(work.examples[1].split, 'eval')
+  assert.throws(() => packageExamples([example('train', 'train')]), /holdout/)
+  assert.throws(() => packageExamples([example('same', 'train'), example('same', 'eval')]), /overlap/)
+  assert.throws(() => buildRlvrWorkItem(built.recipe, '{}\n'), /dataset hash/)
   const network = buildRlvrRecipe({
     ...built.recipe,
     steps: 1,

@@ -145,6 +145,8 @@ export interface DistributedAggregateManifest {
     shard_artifacts: DistributedShardArtifactSpec[];
 }
 export interface QueryDatasetExample {
+    split?: 'train' | 'validation' | 'eval';
+    verifier_id?: string;
     messages: Array<{
         role: 'user' | 'assistant';
         content: string;
@@ -220,6 +222,7 @@ export interface QueryDatasetPackOptions {
     max_examples?: number;
     as_of_epoch_sec?: number;
     rlvr_only?: boolean;
+    split?: string;
     base_model_hash?: string;
     tokenizer_hash?: string;
 }
@@ -261,6 +264,7 @@ export declare function buildRlvrRecipe(input: Omit<RlvrRecipe, 'format' | 'algo
     recipe_json: string;
     recipe_hash: string;
 };
+export declare function buildRlvrWorkItem(recipe: RlvrRecipe, datasetJsonl: string): string;
 export declare const AI_DATA_SCOPE_TRAINING = 1;
 export declare const AI_DATA_SCOPE_PROMPT = 2;
 export declare const AI_DATA_SCOPE_RESPONSE = 4;
