@@ -10,6 +10,7 @@ import {
   aegisHarborCheckCommand,
   buildDistributedAggregateManifest,
   buildDistributedExpertPlan,
+  buildSharedAggregationManifest,
   buildFusionManifest,
   buildFusionRegisterPlan,
   buildQueryDatasetFromTraces,
@@ -33,6 +34,41 @@ async function listen(server: http.Server): Promise<string> {
   const address = server.address() as AddressInfo
   return `http://127.0.0.1:${address.port}`
 }
+
+test('training exposes collective contributions and shared aggregation, with no standalone submit command', () => {
+  const train = createAiCommand().commands.find(command => command.name() === 'train')!
+  const commands = train.commands.map(command => command.name())
+  assert.equal(commands.includes('submit'), false)
+  for (const name of ['configure-round', 'join', 'contribute', 'aggregate', 'fund']) {
+    assert.ok(commands.includes(name), `missing shared-training operation: ${name}`)
+  }
+  assert.throws(() => buildDistributedExpertPlan({
+    base_model_id: '1', expert_role: 'code', shard_count: 1,
+  }), /at least two/)
+  assert.throws(() => buildDistributedExpertPlan({
+    base_model_id: '1', expert_role: 'code', shard_count: 2,
+    participants: ['alice', 'alice'],
+  }), /distinct/)
+})
+
+test('shared aggregation manifest binds all participants to their exact registered artifacts', () => {
+  const round = {train_id: '7', participant_count: 2, joined_count: 2, contribution_count: 2,
+    aggregate_submission_id: '0', reward_weights: [1, 3], manifest_hash: 'a'.repeat(64),
+    contribution_root: 'b'.repeat(64), recipe_hash: 'c'.repeat(64), base_revision_hash: 'd'.repeat(64)}
+  const participants = [{participant: 'alice', shard_index: 0, submission_id: '11'},
+    {participant: 'bob', shard_index: 1, submission_id: '12'}]
+  const submissions = [{id: '11', train_id: '7', trainer: 'alice', weights_artifact_id: '21'},
+    {id: '12', train_id: '7', trainer: 'bob', weights_artifact_id: '22'}]
+  const artifacts = [{id: '21', kind: 1, owner: 'alice', content_hash: 'e'.repeat(64)},
+    {id: '22', kind: 1, owner: 'bob', content_hash: 'f'.repeat(64)}]
+  const result = buildSharedAggregationManifest(round, participants, submissions, artifacts)
+  assert.equal(result.contribution_root, round.contribution_root)
+  assert.deepEqual((result.participants as Array<Record<string, unknown>>).map(part => part.reward_weight), [1, 3])
+  assert.throws(() => buildSharedAggregationManifest(round, participants.slice(0, 1), submissions, artifacts), /every contribution/)
+  assert.throws(() => buildSharedAggregationManifest(round, [participants[0], participants[0]], submissions, artifacts), /distinct/)
+  assert.throws(() => buildSharedAggregationManifest(round, participants, submissions,
+    [artifacts[0], {...artifacts[1], owner: 'alice'}]), /artifact/)
+})
 
 test('buildTuneNeeds groups low-confidence route logs into tune request templates', () => {
   const needs = buildTuneNeeds(
