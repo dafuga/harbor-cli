@@ -1338,12 +1338,15 @@ export function buildDistributedExpertPlan(input: DistributedExpertPlanInput): D
   if (!input.expert_role.trim()) {
     throw new Error('expert_role is required')
   }
-  if (!Number.isInteger(input.shard_count) || input.shard_count <= 0) {
-    throw new Error('shard_count must be a positive integer')
+  if (!Number.isInteger(input.shard_count) || input.shard_count < 2 || input.shard_count > 15) {
+    throw new Error('shared training requires at least two and at most 15 shards')
   }
   const participants = input.participants ?? []
   if (participants.length > 0 && participants.length !== input.shard_count) {
     throw new Error('participant count must match shard_count')
+  }
+  if (new Set(participants).size !== participants.length) {
+    throw new Error('shared training requires distinct participants')
   }
   const aggregationSeed = {
     base_model_id: baseModelId,
@@ -1383,6 +1386,54 @@ export function buildDistributedExpertPlan(input: DistributedExpertPlanInput): D
     aggregation_group_id: aggregationGroupId,
     shards,
   }
+}
+
+export function buildSharedAggregationManifest(
+  round: Record<string, any>, participants: Array<Record<string, any>>,
+  submissions: Array<Record<string, any>>, artifacts: Array<Record<string, any>>,
+): Record<string, unknown> {
+  const trainId = positiveUint64(round.train_id, 'shared train id')
+  const count = Number(round.participant_count)
+  if (!Number.isInteger(count) || count < 2 || count > 15 ||
+      Number(round.joined_count) !== count || Number(round.contribution_count) !== count ||
+      participants.length !== count || canonicalUint64(round.aggregate_submission_id) !== '0') {
+    throw new Error('shared round requires every contribution and no existing aggregate')
+  }
+  for (const field of ['manifest_hash', 'contribution_root', 'recipe_hash', 'base_revision_hash']) {
+    if (!/^[a-f0-9]{64}$/.test(round[field]) || /^0+$/.test(round[field])) {
+      throw new Error(`invalid shared ${field}`)
+    }
+  }
+  const identities = new Set<string>(), slots = new Set<number>(), hashes = new Set<string>()
+  const members = participants.map(part => {
+    const slot = Number(part.shard_index)
+    if (!Number.isInteger(slot) || slot < 0 || slot >= count || slots.has(slot) ||
+        typeof part.participant !== 'string' || !part.participant || identities.has(part.participant)) {
+      throw new Error('shared round requires distinct participants and complete shard assignments')
+    }
+    identities.add(part.participant); slots.add(slot)
+    const matching = submissions.filter(sub => canonicalUint64(sub.id) === canonicalUint64(part.submission_id))
+    const sub = matching[0]
+    if (matching.length !== 1 || canonicalUint64(sub.train_id) !== trainId || sub.trainer !== part.participant) {
+      throw new Error('shared contribution identity mismatch')
+    }
+    const weights = artifacts.filter(artifact => canonicalUint64(artifact.id) === canonicalUint64(sub.weights_artifact_id))
+    const artifact = weights[0]
+    const weight = round.reward_weights?.[slot]
+    if (weights.length !== 1 || Number(artifact.kind) !== 1 || artifact.owner !== part.participant ||
+        !/^[a-f0-9]{64}$/.test(artifact.content_hash) || hashes.has(artifact.content_hash) ||
+        !Number.isInteger(weight) || weight <= 0 || weight > 0xffffffff) {
+      throw new Error('shared contribution artifact or reward weight mismatch')
+    }
+    hashes.add(artifact.content_hash)
+    return {participant: part.participant, shard_index: slot, reward_weight: weight,
+      weights_hash: artifact.content_hash, artifact_id: canonicalUint64(artifact.id),
+      submission_id: canonicalUint64(sub.id)}
+  }).sort((left, right) => left.shard_index - right.shard_index)
+  return {format: 'harbor.ai.shared-aggregate.v1', train_id: trainId,
+    manifest_hash: round.manifest_hash, contribution_root: round.contribution_root,
+    recipe_hash: round.recipe_hash, base_revision_hash: round.base_revision_hash,
+    shard_count: count, participants: members}
 }
 
 export function parseDistributedShardSpec(value: string): DistributedShardArtifactSpec {
@@ -3928,7 +3979,7 @@ export function createAiCommand(): Command {
     },
   ]))
 
-  ai.addCommand(group('train', 'Run Harbor AI training job lifecycle actions', [
+  ai.addCommand(group('train', 'Jointly train one shared checkpoint and reward its contributors', [
     {
       command: 'start',
       action: 'starttrain',
@@ -3936,10 +3987,28 @@ export function createAiCommand(): Command {
       signerField: 'creator',
     },
     {
-      command: 'submit',
-      action: 'submittrain',
-      fields: ['trainer', ['train_id', 'uint64'], ['weights_artifact_id', 'uint64'], 'metrics_hash', 'metadata'],
+      command: 'contribute',
+      action: 'contribtrain',
+      fields: ['trainer', ['train_id', 'uint64'], ['weights_artifact_id', 'uint64'], 'manifest_hash', 'metrics_hash', 'metadata'],
       signerField: 'trainer',
+    },
+    {
+      command: 'configure-round', action: 'settrainrnd',
+      fields: ['creator', ['train_id', 'uint64'], 'aggregator', 'recipe_hash', ['reward_weights', 'json'], ['minimum_score', 'number']],
+      signerField: 'creator',
+    },
+    {
+      command: 'join', action: 'jointrain',
+      fields: ['participant', ['train_id', 'uint64']], signerField: 'participant',
+    },
+    {
+      command: 'aggregate', action: 'aggrtrain',
+      fields: ['aggregator', ['train_id', 'uint64'], ['weights_artifact_id', 'uint64'], 'contribution_root', 'metrics_hash', 'metadata'],
+      signerField: 'aggregator',
+    },
+    {
+      command: 'fund', action: 'fundtrain',
+      fields: ['payer', ['train_id', 'uint64'], 'quantity'], signerField: 'payer',
     },
     {
       command: 'attest-lineage',
@@ -3969,6 +4038,33 @@ export function createAiCommand(): Command {
       fields: [['train_id', 'uint64'], ['max_rows', 'number']],
     },
   ]))
+
+  ai.commands.find(command => command.name() === 'train')!.command('aggregation-manifest <train_id>')
+    .description('Read exact shared-round contributions from HarborAI for the tensor aggregator')
+    .option('--url <url>', 'chain RPC URL')
+    .option('--contract <account>', 'HarborAI contract', AI_CONTRACT)
+    .option('--out <path>', 'save the aggregation manifest')
+    .action(async (id: string, options: {url?: string; contract: string; out?: string}) => {
+      const trainId = positiveUint64(id, 'shared train id')
+      const exact = async (table: string, key: string) => {
+        const result = await getTableRows<Record<string, any>>(options.contract, table, {
+          url: options.url, lowerBound: key, upperBound: key, limit: 1,
+        })
+        if (result.rows.length !== 1) throw new Error(`missing shared training ${table} row ${key}`)
+        return result.rows[0]
+      }
+      const round = await exact('trainrounds', trainId)
+      const participants = await getAllTableRows<Record<string, any>>(options.contract, 'trainparts', {
+        url: options.url, scope: trainId, limit: 16,
+      })
+      const submissions = await Promise.all(participants.map(part => exact('trainsubs', canonicalUint64(part.submission_id))))
+      const artifacts = await Promise.all(submissions.map(sub => exact('artifacts', canonicalUint64(sub.weights_artifact_id))))
+      const current = await exact('trainrounds', trainId)
+      if (canonicalJson(round) !== canonicalJson(current)) throw new Error('shared round changed during observation; retry')
+      const manifest = buildSharedAggregationManifest(round, participants, submissions, artifacts)
+      if (options.out) await fs.writeFile(path.resolve(options.out), canonicalJson(manifest))
+      printResult(manifest, true)
+    })
 
   ai.addCommand(group('distill', 'Run consented, batched specialist distillation campaigns', [
     {

@@ -297,6 +297,7 @@ export declare function buildFusionRegisterPlan(input: {
     modelMetadata?: Record<string, unknown>;
 }): FusionRegisterPlan;
 export declare function buildDistributedExpertPlan(input: DistributedExpertPlanInput): DistributedExpertPlan;
+export declare function buildSharedAggregationManifest(round: Record<string, any>, participants: Array<Record<string, any>>, submissions: Array<Record<string, any>>, artifacts: Array<Record<string, any>>): Record<string, unknown>;
 export declare function parseDistributedShardSpec(value: string): DistributedShardArtifactSpec;
 export declare function buildDistributedAggregateManifest(input: {
     base_model_id: Uint64String;

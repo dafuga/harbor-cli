@@ -660,12 +660,38 @@ call the existing `addartifact` and `regmodel` actions. `harbor ai fusion
 inspect` reads the model, manifest artifact metadata, route logs, and subcalls
 to show which experts participated.
 
-For distributed expert training, use `harbor ai fusion distributed plan` to
-assign deterministic shard metadata across participant trainers. Each shard can
-be submitted through the normal `harbor ai train` lifecycle, then
-`harbor ai fusion distributed aggregation manifest` records the shard artifact
-hashes for a weighted LoRA aggregate produced off-chain by the training
-coordinator.
+Training jobs now represent one shared round with 2–15 registered `aitrain`
+participants. In existing action signatures, `max_submissions` specifies that
+participant count; it no longer enables rival finished models. The lifecycle is:
+
+```sh
+harbor ai train start <creator> <tune_id> <base_model_id> <dataset_artifact_id> "5.0000 SYS" 2 '{}' 3600
+harbor ai train configure-round <creator> <train_id> <aggregator> <recipe_hash> '[1,1]' 8000
+harbor ai train join <participant_a> <train_id>
+harbor ai train join <participant_b> <train_id>
+harbor ai train contribute <participant_a> <train_id> <artifact_a> <manifest_hash> <metrics_a> '{}'
+harbor ai train contribute <participant_b> <train_id> <artifact_b> <manifest_hash> <metrics_b> '{}'
+harbor ai train aggregation-manifest <train_id> --out /tmp/shared-round.json
+harbor ai train aggregate <aggregator> <train_id> <aggregate_artifact> <contribution_root> <metrics_hash> '{}'
+```
+
+Use the complete manifest hash from `trainrounds` after both participants join.
+The governed runtime obtains shard assignments directly from `trainparts`; a
+local planning file cannot authorize training. The aggregation manifest reads
+and validates the exact chain contributions for `gemma_mlx_aggregate.py
+--round-manifest`. Independent oracles score every contribution and the
+aggregate before `harbor ai train settle <train_id>` distributes the frozen
+network-token shares. Only the combined checkpoint becomes a model. A promotion
+job may first need `harbor ai train fund <payer> <train_id> <quantity>` before
+configuration. Private contributions and aggregation retain all Vault grants,
+reviewed lineage and access/output uses.
+
+`train submit` is removed. Historical funded jobs are refund-only through
+`train cancel`; they cannot be converted to shared rounds. Existing balances
+and settled history are preserved. The `fusion distributed plan` helper only
+prepares an advisory layout; actual participation and weights come from chain
+state. Inference collection, dataset review, enrollment and release still need
+operator/controller orchestration for a continuous learning network.
 
 If your trusted reviewer is configured through Aegis, use the same adapter for
 router checks and vote approval. The helper commands generate the Aegis config,
