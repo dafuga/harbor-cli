@@ -15,6 +15,8 @@ export function renderLaunchdPlist(input: {
   command: string
   args?: string[]
   workingDirectory?: string
+  restartOnFailure?: boolean
+  supervisorLog?: string
 }): string {
   const args = [input.command, ...(input.args ?? [])]
   const argXml = args.map((arg) => `    <string>${xmlEscape(arg)}</string>`).join('\n')
@@ -22,6 +24,10 @@ export function renderLaunchdPlist(input: {
   const workingDirectory = input.workingDirectory
     ? `\n  <key>WorkingDirectory</key>\n  <string>${xmlEscape(input.workingDirectory)}</string>`
     : ''
+  const keepAlive = input.restartOnFailure
+    ? '<dict><key>SuccessfulExit</key><false/></dict>'
+    : '<true/>'
+  const throttle = input.restartOnFailure ? '\n  <key>ThrottleInterval</key>\n  <integer>2</integer>' : ''
 
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
@@ -37,11 +43,11 @@ ${argXml}
   <key>RunAtLoad</key>
   <true/>
   <key>KeepAlive</key>
-  <true/>
+  ${keepAlive}${throttle}
   <key>StandardOutPath</key>
-  <string>${xmlEscape(`${logBase}.out.log`)}</string>
+  <string>${xmlEscape(input.supervisorLog ?? `${logBase}.out.log`)}</string>
   <key>StandardErrorPath</key>
-  <string>${xmlEscape(`${logBase}.err.log`)}</string>
+  <string>${xmlEscape(input.supervisorLog ?? `${logBase}.err.log`)}</string>
 </dict>
 </plist>
 `

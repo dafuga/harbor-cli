@@ -61,10 +61,10 @@ export function createDefaultConfig(account: string): HarborAgentConfig {
 }
 
 export async function ensureHarborDirs(config: HarborAgentConfig): Promise<void> {
-  await fs.mkdir(harborHome(), {recursive: true})
-  await fs.mkdir(config.storageDir, {recursive: true})
-  await fs.mkdir(path.join(harborHome(), 'logs'), {recursive: true})
-  await fs.mkdir(path.join(harborHome(), 'launchd'), {recursive: true})
+  await fs.mkdir(harborHome(), {recursive: true, mode: 0o700})
+  await fs.mkdir(config.storageDir, {recursive: true, mode: 0o700})
+  await fs.mkdir(path.join(harborHome(), 'logs'), {recursive: true, mode: 0o700})
+  await fs.mkdir(path.join(harborHome(), 'launchd'), {recursive: true, mode: 0o700})
 }
 
 export async function loadConfig(configPath = defaultConfigPath()): Promise<HarborAgentConfig> {
@@ -82,5 +82,7 @@ export async function loadConfig(configPath = defaultConfigPath()): Promise<Harb
 
 export async function saveConfig(config: HarborAgentConfig, configPath = defaultConfigPath()): Promise<void> {
   await ensureHarborDirs(config)
-  await fs.writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`)
+  await fs.mkdir(path.dirname(configPath), {recursive: true, mode: 0o700})
+  await fs.writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`, {mode: 0o600})
+  if (process.platform !== 'win32') await fs.chmod(configPath, 0o600)
 }
