@@ -1,4 +1,4 @@
-import { APIClient, Action } from '@wharfkit/antelope';
+import { ABI, APIClient, Action, SignedTransaction } from '@wharfkit/antelope';
 export interface AuthOptions {
     url?: string;
     actor?: string;
@@ -29,6 +29,7 @@ export declare function parseAuthorizations(auth: string): Array<{
 export declare function parseJson(value: string): unknown;
 export declare function printResult(result: unknown, json?: boolean): void;
 export declare function clientFor(url?: string): APIClient;
+export declare function getAbi(account: string, url?: string): Promise<ABI>;
 export declare function serializeAction(input: PushActionInput): Promise<Action>;
 export declare function transactActions(options: AuthOptions, actions: Action[] | Array<Record<string, unknown>>): Promise<{
     transaction_id: string | undefined;
@@ -41,6 +42,10 @@ export declare function transactActions(options: AuthOptions, actions: Action[] 
             };
         };
     } | undefined;
+}>;
+export declare function signAction(input: PushActionInput): Promise<{
+    chain_id: import("@wharfkit/antelope").Checksum256;
+    transaction: SignedTransaction;
 }>;
 export declare function pushAction(input: PushActionInput): Promise<{
     transaction_id: string | undefined;

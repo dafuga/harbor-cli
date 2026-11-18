@@ -1,3 +1,8 @@
+/*
+ * Contract deployment flow adapted from greymass/antelope-cli.
+ * Copyright (c) Greymass Inc. and antelope-cli contributors.
+ * BSD-3-Clause. See NOTICE.
+ */
 import {Command} from 'commander'
 import {addTxOptions} from './action.js'
 import {deployContract} from '../lib/deploy.js'
@@ -37,7 +42,7 @@ export function createContractCommand(): Command {
       .requiredOption('--account <account>', 'contract account')
       .requiredOption('--wasm <path>', 'WASM file')
       .requiredOption('--abi <path>', 'ABI file')
-      .option('--validate', 'only validate ABI/table safety')
+      .option('--validate', 'check ABI/table safety before signing and deploying')
   ).action(async (options) => {
     const result = await deployContract({
       account: options.account,
