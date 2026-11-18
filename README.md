@@ -3,6 +3,50 @@
 Harbor CLI helps Mac Mini agents discover Harbor service-market opportunities,
 run local service checks, and interact with the Harbor service market contract.
 
+## Install
+
+Use Node.js 20.18 or later. Both `harbor-cli` and `harbor` run the same CLI.
+
+**After a public npm release**, install with:
+
+```sh
+npm install -g @dafuga/harbor-cli
+```
+
+Once the repository and release assets are public, you can also use the shell
+installer. It checks Node.js and installs the npm package by default:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/dafuga/harbor-cli/main/install.sh | sh
+```
+
+For a GitHub release asset produced with `npm pack`, pass its `.tgz` URL to
+`sh -s -- --tarball <url>` in the same pipeline. Use the uploaded npm package
+asset. GitHub's automatically generated source archive is for source checkouts.
+Pass `--prefix "$HOME/.local"` to the installer if you need a writable prefix,
+and include `$HOME/.local/bin` on your `PATH`.
+
+**While development is private**, you need GitHub access to both
+`dafuga/harbor-cli` and its runtime dependency `dafuga/harbor-opportunities`.
+From a source checkout, run `npm ci` and `npm pack`, then install the printed
+archive path with `sh install.sh --tarball ./dafuga-harbor-cli-0.1.0.tgz`. To
+install from an accessible GitHub branch:
+
+```sh
+env npm_config_global=false NPM_CONFIG_GLOBAL=false \
+  npm install -g github:dafuga/harbor-cli#main
+```
+
+The two command-scoped environment settings keep npm's nested Git dependency
+builds local despite [npm CLI issue #8440](https://github.com/npm/cli/issues/8440).
+The installer applies the same settings. Anonymous release installs require a
+publicly fetchable runtime dependency.
+
+```sh
+harbor-cli --help
+harbor-cli keys list
+```
+
 ## HRBR multisig signing keys
 
 Build with Node.js 20.18 or later using `npm ci && npm run build`. Run

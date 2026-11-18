@@ -1,15 +1,17 @@
 {
-  "name": "@harbor/cli",
+  "name": "@dafuga/harbor-cli",
   "version": "0.1.0",
-  "private": true,
   "description": "Harbor command line tools for service agents and market operators.",
   "license": "BSD-3-Clause",
   "type": "module",
   "bin": {
+    "harbor-cli": "lib/index.js",
     "harbor": "lib/index.js"
   },
   "files": [
     "lib",
+    "!lib/**/*.test.*",
+    "!lib/**/*.e2e.*",
     "src/lib/secure-enclave.swift",
     "NOTICE"
   ],
@@ -17,7 +19,8 @@
     "build": "tsc",
     "check": "tsc --noEmit",
     "test": "node --test lib/**/*.test.js",
-    "test:msig:e2e": "node lib/lib/harbor-msig.e2e.js"
+    "test:msig:e2e": "node lib/lib/harbor-msig.e2e.js",
+    "prepare": "npm run build"
   },
   "engines": {
     "node": ">=20.18.0"
@@ -26,7 +29,6 @@
     "@harbor/opportunities": "github:dafuga/harbor-opportunities#5be04aa07febcefb777d7d0c7c492553833d0b4c",
     "@solana/transaction-messages": "6.4.0",
     "@solana/transactions": "6.4.0",
-    "@types/qrcode-terminal": "^0.12.2",
     "@wharfkit/antelope": "^1.2.0",
     "@wharfkit/common": "^1.5.0",
     "@wharfkit/contract": "^1.2.1",
@@ -40,6 +42,7 @@
   "devDependencies": {
     "@types/node": "^20.12.12",
     "@types/pako": "^2.0.4",
+    "@types/qrcode-terminal": "^0.12.2",
     "@types/sodium-native": "^2.3.9",
     "typescript": "^5.4.5"
   }
