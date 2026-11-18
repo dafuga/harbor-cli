@@ -1,5 +1,5 @@
 import {createCipheriv, createDecipheriv, randomBytes, scrypt} from 'node:crypto'
-import {constants, type Stats} from 'node:fs'
+import {constants, lstatSync, mkdirSync, renameSync, rmdirSync, type Stats} from 'node:fs'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import {Base58, PublicKey} from '@wharfkit/antelope'
@@ -17,6 +17,7 @@ type EncryptedKey = KeyMetadata & {
 }
 type EnclaveKey = KeyMetadata & {version: 1; storage: 'enclave'; wrapped: string}
 export type StoredKey = EncryptedKey | EnclaveKey
+type KeyEntry = {filename: string; record: StoredKey; stat: Stats}
 
 const MAX_RECORD_BYTES = 8192
 const SCRYPT = {N: 1 << 17, r: 8, p: 1, maxmem: 160 * 1024 * 1024}
@@ -135,29 +136,38 @@ function decodeRecord(raw: string, name: string): StoredKey {
   throw new Error('invalid Harbor keystore entry')
 }
 
-async function readRecord(dir: string, name: string): Promise<StoredKey> {
-  const file = await fs.open(path.join(dir, keyName(name) + '.json'), constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK)
+function checkKeyFile(stat: Stats): void {
+  if (!stat.isFile() || stat.uid !== process.getuid?.() || (stat.mode & 0o777) !== 0o600 || stat.size > MAX_RECORD_BYTES) {
+    throw new Error('Harbor key entries must be owner-only regular files with mode 0600')
+  }
+  if (stat.nlink !== 1) throw new Error('Harbor key entries must have a single link')
+}
+
+async function readRecord(filename: string, name: string): Promise<KeyEntry> {
+  const file = await fs.open(filename, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK)
   try {
     const stat = await file.stat()
-    if (!stat.isFile() || stat.uid !== process.getuid?.() || (stat.mode & 0o777) !== 0o600 || stat.size > MAX_RECORD_BYTES) {
-      throw new Error('Harbor key entries must be owner-only regular files with mode 0600')
-    }
-    if (stat.nlink !== 1) throw new Error('Harbor key entries must have a single link')
+    checkKeyFile(stat)
     const bytes = Buffer.alloc(MAX_RECORD_BYTES + 1)
     const {bytesRead} = await file.read(bytes)
     if (bytesRead > MAX_RECORD_BYTES) throw new Error('Harbor keystore entry is too large')
-    return decodeRecord(bytes.toString('utf8', 0, bytesRead), name)
+    return {filename, record: decodeRecord(bytes.toString('utf8', 0, bytesRead), name), stat}
   } finally {
     await file.close()
   }
 }
 
-export async function readStoredKey(name: string): Promise<StoredKey | undefined> {
+export async function readKeyEntry(name: string): Promise<KeyEntry | undefined> {
   try {
-    return await readRecord(await directory(false), name)
+    const dir = await directory(false)
+    return await readRecord(path.join(dir, keyName(name) + '.json'), name)
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
   }
+}
+
+export async function readStoredKey(name: string): Promise<StoredKey | undefined> {
+  return (await readKeyEntry(name))?.record
 }
 
 export async function listStoredKeys(): Promise<StoredKey[]> {
@@ -169,12 +179,15 @@ export async function listStoredKeys(): Promise<StoredKey[]> {
     throw error
   }
   const names = (await fs.readdir(dir)).filter((name) => name.endsWith('.json')).sort()
-  return Promise.all(names.map((name) => readRecord(dir, name.slice(0, -5))))
+  return Promise.all(names.map(async (name) => {
+    const key = keyName(name.slice(0, -5))
+    return (await readRecord(path.join(dir, name), key)).record
+  }))
 }
 
-export async function storeKey(record: StoredKey): Promise<void> {
-  const dir = await directory(true)
-  const destination = path.join(dir, keyName(record.name) + '.json')
+async function publishKey(
+  dir: string, record: StoredKey, publish: (temporary: string) => Promise<void>,
+): Promise<void> {
   const temporary = path.join(dir, '.new-' + randomBytes(16).toString('hex'))
   const file = await fs.open(temporary, 'wx', 0o600)
   try {
@@ -185,13 +198,9 @@ export async function storeKey(record: StoredKey): Promise<void> {
     } finally {
       await file.close()
     }
-    // Publish a complete record without replacing a key created by another process.
-    await fs.link(temporary, destination)
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'EEXIST') throw new Error('a key already uses this name')
-    throw error
+    await publish(temporary)
   } finally {
-    await fs.unlink(temporary)
+    await fs.rm(temporary, {force: true})
   }
   const handle = await fs.open(dir, 'r')
   try {
@@ -199,4 +208,54 @@ export async function storeKey(record: StoredKey): Promise<void> {
   } finally {
     await handle.close()
   }
+}
+
+export async function storeKey(record: StoredKey): Promise<void> {
+  const dir = await directory(true)
+  const destination = path.join(dir, keyName(record.name) + '.json')
+  // Publish a complete record without replacing a key created by another process.
+  await publishKey(dir, record, async (temporary) => {
+    try {
+      await fs.link(temporary, destination)
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'EEXIST') throw new Error('a key already uses this name')
+      throw error
+    }
+  })
+}
+
+export async function replaceEncryptedKey(
+  entry: KeyEntry, replacement: EncryptedKey, verify: (record: EncryptedKey) => Promise<void>,
+): Promise<void> {
+  const {filename, record, stat} = entry
+  const dir = path.dirname(filename)
+  await publishKey(dir, replacement, async (temporary) => {
+    const staged = (await readRecord(temporary, record.name)).record
+    if (staged.storage !== 'encrypted' || staged.publicKey !== record.publicKey || staged.type !== record.type) {
+      throw new Error('replacement keystore entry does not match the stored key')
+    }
+    await verify(staged)
+
+    // Serialize the final identity check and rename across concurrent rotations.
+    const lock = path.join(dir, '.passwd-' + record.name)
+    try {
+      mkdirSync(lock, {mode: 0o700})
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'EEXIST') {
+        throw new Error('password rotation is locked for this key')
+      }
+      throw error
+    }
+    try {
+      const latest = lstatSync(filename)
+      checkKeyFile(latest)
+      if (latest.dev !== stat.dev || latest.ino !== stat.ino ||
+          latest.mtimeMs !== stat.mtimeMs || latest.ctimeMs !== stat.ctimeMs) {
+        throw new Error('keystore entry changed during password rotation; retry with the current password')
+      }
+      renameSync(temporary, filename)
+    } finally {
+      rmdirSync(lock)
+    }
+  })
 }

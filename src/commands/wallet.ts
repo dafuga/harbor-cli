@@ -5,7 +5,7 @@
  */
 import {Command, Option} from 'commander'
 import {readPrivateKeyInput} from '../lib/key-prompt.js'
-import {createWalletKey, importWalletKey, listWalletKeys} from '../lib/wallet.js'
+import {changeWalletKeyPassword, createWalletKey, importWalletKey, listWalletKeys} from '../lib/wallet.js'
 import type {KeyType} from '../lib/keystore.js'
 
 function addList(command: Command): void {
@@ -52,6 +52,12 @@ export function createKeysCommand(): Command {
   addList(keys.command('list'))
   addCreate(keys.command('create [name]'))
   addImport(keys.command('import <name>'))
+  keys.command('passwd <name>')
+    .description('Change the password for an encrypted signing key')
+    .action(async (name: string) => {
+      await changeWalletKeyPassword(name)
+      console.log('Key password changed.')
+    })
   return keys
 }
 
