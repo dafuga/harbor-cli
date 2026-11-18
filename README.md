@@ -10,7 +10,7 @@ Use Node.js 20.18 or later. Both `harbor-cli` and `harbor` run the same CLI.
 **After a public npm release**, install with:
 
 ```sh
-npm install -g @dafuga/harbor-cli
+npm install -g @harbornet/cli
 ```
 
 Once the repository and release assets are public, you can also use the shell
@@ -30,7 +30,7 @@ To install from GitHub or an npm package tarball:
 
 ```sh
 npm install -g github:dafuga/harbor-cli
-npm install -g ./dafuga-harbor-cli-0.1.0.tgz
+npm install -g ./harbornet-cli-0.1.0.tgz
 ```
 
 Run `npm ci` and `npm run pack:release` in the source checkout to build and

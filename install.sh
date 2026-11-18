@@ -5,7 +5,7 @@ usage() {
   printf '%s\n' 'Usage: install.sh [--tarball <npm-package.tgz or URL>] [--prefix <directory>]'
 }
 
-package='@dafuga/harbor-cli'
+package='@harbornet/cli'
 prefix=''
 while [ "$#" -gt 0 ]; do
   case "$1" in
