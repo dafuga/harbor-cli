@@ -16,11 +16,12 @@
     "NOTICE"
   ],
   "scripts": {
-    "build": "tsc",
+    "compile": "tsc",
     "check": "tsc --noEmit",
     "test": "node --test lib/**/*.test.js",
     "test:msig:e2e": "node lib/lib/harbor-msig.e2e.js",
-    "prepack": "npm run build"
+    "pack:release": "npm run compile && npm pack",
+    "prepublishOnly": "npm run compile"
   },
   "engines": {
     "node": ">=20.18.0"

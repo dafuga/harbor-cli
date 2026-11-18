@@ -33,7 +33,9 @@ npm install -g github:dafuga/harbor-cli
 npm install -g ./dafuga-harbor-cli-0.1.0.tgz
 ```
 
-Run `npm ci` and `npm pack` in the source checkout to produce the tarball.
+Run `npm ci` and `npm run pack:release` in the source checkout to build and
+pack a release tarball. GitHub installs use the compiled `lib/` checked into
+the repository, so npm can install globally without invoking a source build.
 
 ```sh
 harbor-cli --help
@@ -42,7 +44,7 @@ harbor-cli keys list
 
 ## HRBR multisig signing keys
 
-Build with Node.js 20.18 or later using `npm ci && npm run build`. Run
+Build with Node.js 20.18 or later using `npm ci && npm run compile`. Run
 `node lib/index.js` from the checkout, or use the installed `harbor` binary.
 Give each device a distinct key name and use a separate `HARBOR_HOME` for
 rehearsal keys. The examples below target a loopback test chain.
@@ -181,7 +183,7 @@ rehearsal before trusting the replacement with assets.
 
 ### Test commands
 
-`npm run check`, `npm run build`, and `npm test` cover the CLI and local
+`npm run check`, `npm run compile`, and `npm test` cover the CLI and local
 signature handling. The dedicated end-to-end test starts a fresh loopback
 Harbor chain, deploys fixture contracts, and deletes the temporary chain and
 keystore afterward.
@@ -949,6 +951,6 @@ contract.
 
 ```sh
 npm install
-npm run build
+npm run compile
 node lib/index.js --help
 ```
