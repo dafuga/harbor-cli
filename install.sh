@@ -44,6 +44,4 @@ fi
 if [ -n "$prefix" ]; then
   set -- --prefix "$prefix"
 fi
-# Keep npm's nested Git dependency builds local (npm/cli#8440).
-unset npm_config_global NPM_CONFIG_GLOBAL
-exec env npm_config_global=false NPM_CONFIG_GLOBAL=false npm install --global "$@" -- "$package"
+exec npm install --global "$@" -- "$package"

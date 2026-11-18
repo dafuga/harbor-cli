@@ -20,7 +20,7 @@
     "check": "tsc --noEmit",
     "test": "node --test lib/**/*.test.js",
     "test:msig:e2e": "node lib/lib/harbor-msig.e2e.js",
-    "prepare": "npm run build"
+    "prepare": "node prepare.mjs"
   },
   "engines": {
     "node": ">=20.18.0"
