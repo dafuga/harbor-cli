@@ -2,7 +2,7 @@ $ harbor doctor --json
 macos-arm64 · darwin · launchd
 
 $ harbor run aiinfer --dry-run
-harbor-aiinferd-macos-arm64 · 40% CPU · 40% memory
+harbor-aiinferd-darwin-arm64 · 40% CPU / GPU / memory
 
 $ harbor ai local-model --model-profile flagship
 qwen3:8b-q4_K_M · Qwen/Qwen3-8B adapter base
@@ -23,4 +23,4 @@ $ harbor service stop / uninstall aiinfer
 Stopped and unregistered
 
 $ Verify shutdown
-Inference port closed
+Inference and managed backend ports closed

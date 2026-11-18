@@ -91,9 +91,15 @@ export const SERVICE_RUNTIMES: ServiceRuntime[] = [
   {name: 'scheduler', aliases: ['check-scheduler'], daemon: 'harbor-check-scheduler', serviceTypeId: 13, portOffset: 50},
 ]
 
+export const NODE_RUNTIME: ServiceRuntime = {name: 'nodeos', aliases: ['node', 'peer'], daemon: 'nodeos', serviceTypeId: 0, portOffset: 0}
+
+export function isNodeRuntime(service: ServiceRuntime): boolean {
+  return service.name === NODE_RUNTIME.name
+}
+
 export function normalizeServiceName(name: string): ServiceRuntime {
   const normalized = name.trim().toLowerCase().replaceAll('_', '-')
-  const service = SERVICE_RUNTIMES.find((item) => item.name === normalized || item.aliases.includes(normalized))
+  const service = [NODE_RUNTIME, ...SERVICE_RUNTIMES].find((item) => item.name === normalized || item.aliases.includes(normalized))
   if (!service) {
     throw new Error(`unknown Harbor service: ${name}`)
   }
@@ -186,6 +192,10 @@ async function resolveLocal(service: ServiceRuntime, version: string, forceInsta
   if (packagedDir) {
     const binary = path.resolve(packagedDir, service.daemon)
     if (await executableExists(binary)) return {binary, version, source: 'local', installed: false, provenance: packagedDir}
+  }
+  if (isNodeRuntime(service)) {
+    const binary = await resolvePathBinary(service.daemon)
+    return binary && await matchesLegacyHost(binary) ? {binary, version, source: 'path', installed: false, provenance: 'PATH'} : null
   }
   const repo = path.resolve(siblingOpportunitiesRepo())
   const buildBinary = path.join(repo, 'build', service.daemon)
@@ -304,9 +314,13 @@ function parseShaSums(text: string, artifactName: string): string | null {
   return null
 }
 
-async function resolveGithubRepository(options: ResolveArtifactOptions, version: string, repo: string): Promise<ResolvedArtifact> {
+async function resolveGithubRepository(
+  options: ResolveArtifactOptions,
+  version: string,
+  repo: string,
+  artifactName: string,
+): Promise<ResolvedArtifact> {
   if (!/^[\w.-]+\/[\w.-]+$/.test(repo)) throw new Error('GitHub artifact repository must use owner/repo format')
-  const artifactName = releaseAsset(options.service.daemon)
   const release = version === 'latest' || version === 'dev' ? 'latest/download' : `download/${encodeURIComponent(version)}`
   const base = `https://github.com/${repo}/releases/${release}`
   let checksum = options.sha256
@@ -334,13 +348,22 @@ async function resolveGithubRepository(options: ResolveArtifactOptions, version:
 }
 
 async function resolveGithub(options: ResolveArtifactOptions, version: string): Promise<ResolvedArtifact> {
+  const resolveFrom = async (repo: string) => {
+    const target = runtimeTarget()
+    try {
+      return await resolveGithubRepository(options, version, repo, releaseAsset(options.service.daemon, target))
+    } catch (error) {
+      if (!target.startsWith('macos-') || !(error instanceof DownloadError) || error.status !== 404) throw error
+      return resolveGithubRepository(options, version, repo, `${options.service.daemon}-${target}`)
+    }
+  }
   const repo = process.env.HARBOR_OPPORTUNITIES_GITHUB_REPO
-  if (repo) return resolveGithubRepository(options, version, repo)
+  if (repo) return resolveFrom(repo)
   try {
-    return await resolveGithubRepository(options, version, 'dafuga/harbor-cli')
+    return await resolveFrom('dafuga/harbor-cli')
   } catch (error) {
     if (!(error instanceof DownloadError) || error.status !== 404) throw error
-    return resolveGithubRepository(options, version, 'dafuga/harbor-opportunities')
+    return resolveFrom('dafuga/harbor-opportunities')
   }
 }
 

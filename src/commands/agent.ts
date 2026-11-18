@@ -2,7 +2,9 @@ import {Command} from 'commander'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import {addLaunchdCommand} from './agent-launchd.js'
+import {addAgentLimitsCommands} from './agent-limits.js'
 import {addAgentStatusCommands} from './agent-status.js'
+import {createServiceCommand} from './service.js'
 import {createDefaultConfig, defaultConfigPath, loadConfig, saveConfig} from '../lib/config.js'
 
 interface AgentInitOptions {
@@ -70,6 +72,8 @@ export function createAgentCommand(): Command {
   addInitCommand(agent)
   addConfigCommand(agent)
   addAgentStatusCommands(agent)
+  addAgentLimitsCommands(agent)
   addLaunchdCommand(agent)
+  agent.addCommand(createServiceCommand())
   return agent
 }

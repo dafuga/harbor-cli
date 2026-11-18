@@ -1,6 +1,8 @@
 import {Command} from 'commander'
 import {defaultConfigPath, ensureHarborDirs, HarborAgentConfig, loadConfig} from '../lib/config.js'
 import {canConnect} from '../lib/ports.js'
+import {hostPlatform} from '../lib/runtime-host.js'
+import {serviceManager, verifyServiceManager} from '../lib/service-manager.js'
 
 interface AgentStatusOptions {
   bpPort: string
@@ -115,10 +117,17 @@ function addDoctorCommand(agent: Command): void {
     .command('doctor')
     .description('Check local config, directories, and service ports')
     .option('--config <path>', 'config path', defaultConfigPath())
-    .action(async (options: {config: string}) => {
-      const config = await loadConfig(options.config)
-      await ensureHarborDirs(config)
-      console.table(await doctorRows(config, options.config))
+    .option('--json', 'print JSON output')
+    .action(async (options: {config: string; json?: boolean}) => {
+      const checks = await loadConfig(options.config).then(async (config) => {
+        await ensureHarborDirs(config)
+        return doctorRows(config, options.config)
+      }).catch((error: Error) => [{check: 'config', value: error.message, ok: false}])
+      checks.unshift(await verifyServiceManager()
+        .then(() => ({check: 'service-manager', value: serviceManager(), ok: true}))
+        .catch((error: Error) => ({check: 'service-manager', value: error.message, ok: false})))
+      if (options.json) console.log(JSON.stringify({platform: hostPlatform(), checks}, null, 2))
+      else console.table(checks)
     })
 }
 

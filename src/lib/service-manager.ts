@@ -18,6 +18,7 @@ type ServiceState = 'running' | 'starting' | 'stopping' | 'stopped' | 'failed'
 
 export interface ServiceRegistration {
   manager: Manager
+  system?: boolean
   id: string
   record: string
   definition: string
@@ -28,19 +29,23 @@ export function serviceManager(): Manager {
   return process.platform === 'darwin' ? 'launchd' : 'systemd'
 }
 
-export function registration(service: ServiceRuntime): ServiceRegistration {
+export function registration(service: ServiceRuntime, system = false): ServiceRegistration {
   const manager = serviceManager()
+  if (system && manager !== 'systemd') throw new Error('--system is supported with Linux systemd')
   const home = path.resolve(harborHome())
   const namespace = createHash('sha256').update(home).digest('hex').slice(0, 12)
   const id = `io.harbor.runtime.${namespace}.${service.name}`
-  const dir = path.join(home, 'services', service.name)
+  const dir = path.join(home, system ? 'system-services' : 'services', service.name)
   return {
     manager,
+    system,
     id,
     record: path.join(dir, 'registration.json'),
     definition: manager === 'launchd'
       ? path.join(dir, `${id}.plist`)
-      : path.resolve(process.env.XDG_CONFIG_HOME ?? path.join(os.homedir(), '.config'), 'systemd', 'user', `${id}.service`),
+      : system
+        ? path.join('/etc/systemd/system', `${id}.service`)
+        : path.resolve(process.env.XDG_CONFIG_HOME ?? path.join(os.homedir(), '.config'), 'systemd', 'user', `${id}.service`),
   }
 }
 
@@ -48,22 +53,22 @@ function domain(): string {
   return `gui/${process.getuid!()}`
 }
 
-async function managerCommand(manager: Manager, args: string[]): Promise<string> {
+async function managerCommand(manager: Manager, args: string[], system = false): Promise<string> {
   const command = manager === 'launchd' ? '/bin/launchctl' : 'systemctl'
-  const argv = manager === 'systemd' ? ['--user', ...args] : args
+  const argv = manager === 'systemd' ? [system ? '--system' : '--user', ...args] : args
   const env: NodeJS.ProcessEnv = {...process.env, LC_ALL: 'C'}
-  if (manager === 'systemd') env.XDG_RUNTIME_DIR ??= `/run/user/${process.getuid!()}`
+  if (manager === 'systemd' && !system) env.XDG_RUNTIME_DIR ??= `/run/user/${process.getuid!()}`
   const {stdout} = await exec(command, argv, {timeout: 15_000, env})
   return stdout
 }
 
-export async function verifyServiceManager(): Promise<void> {
+export async function verifyServiceManager(system = false): Promise<void> {
   const manager = serviceManager()
   try {
-    await managerCommand(manager, manager === 'launchd' ? ['print', domain()] : ['show', '--property=Version'])
+    await managerCommand(manager, manager === 'launchd' ? ['print', domain()] : ['show', '--property=Version'], system)
   } catch (error) {
     const instruction = manager === 'launchd' ? 'Use a logged-in macOS desktop session.' : 'Start a systemd user session. On WSL2 enable systemd first.'
-    throw new Error(`${manager} user manager is unavailable. ${instruction}`, {cause: error})
+    throw new Error(`${manager} ${system ? 'system' : 'user'} manager is unavailable. ${instruction}`, {cause: error})
   }
 }
 
@@ -120,11 +125,12 @@ async function readRegistration(file: string): Promise<RecordedService | undefin
   }
 }
 
-export async function installService(service: ServiceRuntime, options: HarborRunOptions, launcher: string[]) {
-  const spec = registration(service)
+export async function installService(service: ServiceRuntime, options: HarborRunOptions, launcher: string[], system = false) {
+  const spec = registration(service, system)
   if (!options.dryRun) {
+    if (system && process.getuid?.() !== 0) throw new Error('system-level Harbor service installation requires root')
     if (await readRegistration(spec.record)) throw new Error(`${service.name} is already installed. Uninstall it before changing its registration.`)
-    await verifyServiceManager()
+    await verifyServiceManager(system)
   }
   const plan = await buildRunPlan(service, options)
   const definition = renderServiceDefinition(spec, plan, launcher)
@@ -139,7 +145,7 @@ export async function installService(service: ServiceRuntime, options: HarborRun
   try {
     await fs.writeFile(spec.definition, definition, {flag: 'wx', mode: 0o600})
     wroteDefinition = true
-    if (spec.manager === 'systemd') await managerCommand(spec.manager, ['daemon-reload'])
+    if (spec.manager === 'systemd') await managerCommand(spec.manager, ['daemon-reload'], spec.system)
   } catch (error) {
     if (wroteDefinition) await fs.rm(spec.definition, {force: true})
     await fs.rm(spec.record, {force: true})
@@ -150,7 +156,7 @@ export async function installService(service: ServiceRuntime, options: HarborRun
 
 async function state(spec: ServiceRegistration): Promise<ServiceState> {
   if (spec.manager === 'systemd') {
-    const status = (await managerCommand(spec.manager, ['show', '--property=ActiveState', '--value', `${spec.id}.service`])).trim()
+    const status = (await managerCommand(spec.manager, ['show', '--property=ActiveState', '--value', `${spec.id}.service`], spec.system)).trim()
     if (status === 'active') return 'running'
     if (status === 'activating' || status === 'reloading') return 'starting'
     if (status === 'deactivating') return 'stopping'
@@ -169,31 +175,39 @@ async function state(spec: ServiceRegistration): Promise<ServiceState> {
 
 async function managerState(record: RecordedService) {
   const current = await state(record.spec)
+  const usage = current === 'running' && record.plan.usage_file
+    ? await fs.readFile(record.plan.usage_file, 'utf8').then((raw) => JSON.parse(raw) as {measured_at: number; paused_reason?: string}).catch(() => undefined)
+    : undefined
+  const liveUsage = usage && Date.now() - usage.measured_at < 10_000 ? usage : undefined
   return {
     service: record.plan.service,
     manager: record.spec.manager,
+    system: Boolean(record.spec.system),
     target: record.plan.target,
     installed: true,
     state: current,
     healthy: current === 'running' && await serviceHealthy(record.plan.port, record.plan.service),
     port: record.plan.port,
     limits: record.plan.limits,
+    usage: liveUsage,
     log: record.plan.log,
     config: record.plan.config,
     backend: record.plan.managed_backend && {
       engine: record.plan.managed_backend.engine,
       model: record.plan.managed_backend.model,
+      parallel: record.plan.managed_backend.parallel,
     },
   }
 }
 
-export async function serviceStatus(service: ServiceRuntime) {
-  const spec = registration(service)
+export async function serviceStatus(service: ServiceRuntime, system = false) {
+  const spec = registration(service, system)
   const record = await readRegistration(spec.record)
   if (record) return managerState(record)
   return {
     service: service.name,
     manager: spec.manager,
+    system,
     target: runtimeTarget(),
     installed: false,
     state: 'uninstalled',
@@ -201,8 +215,8 @@ export async function serviceStatus(service: ServiceRuntime) {
   }
 }
 
-export async function registeredService(service: ServiceRuntime): Promise<RecordedService> {
-  const record = await readRegistration(registration(service).record)
+export async function registeredService(service: ServiceRuntime, system = false): Promise<RecordedService> {
+  const record = await readRegistration(registration(service, system).record)
   if (!record) throw new Error(`${service.name} is not installed. Run harbor service install ${service.name}.`)
   return record
 }
@@ -211,7 +225,7 @@ async function stopService(spec: ServiceRegistration, plan: HarborRunPlan): Prom
   const previous = await state(spec)
   if (previous === 'stopped') return
   if (spec.manager === 'systemd') {
-    await managerCommand(spec.manager, ['stop', `${spec.id}.service`])
+    await managerCommand(spec.manager, ['stop', `${spec.id}.service`], spec.system)
   } else {
     await managerCommand(spec.manager, ['bootout', `${domain()}/${spec.id}`])
     const deadline = Date.now() + 8000
@@ -224,29 +238,29 @@ async function stopService(spec: ServiceRegistration, plan: HarborRunPlan): Prom
   }
 }
 
-export async function controlService(service: ServiceRuntime, action: 'start' | 'stop' | 'restart' | 'uninstall') {
-  const record = await registeredService(service)
+export async function controlService(service: ServiceRuntime, action: 'start' | 'stop' | 'restart' | 'uninstall', system = false) {
+  const record = await registeredService(service, system)
   const {spec, plan} = record
-  await verifyServiceManager()
+  await verifyServiceManager(system)
   if (action !== 'start') await stopService(spec, plan)
   if (action === 'uninstall') {
     await fs.rm(spec.definition, {force: true})
-    if (spec.manager === 'systemd') await managerCommand(spec.manager, ['daemon-reload'])
+    if (spec.manager === 'systemd') await managerCommand(spec.manager, ['daemon-reload'], spec.system)
     await fs.rm(spec.record, {force: true})
-    return serviceStatus(service)
+    return serviceStatus(service, system)
   }
   if (action !== 'stop') {
     const current = await state(spec)
     if (current === 'failed') {
       await stopService(spec, plan)
-      if (spec.manager === 'systemd') await managerCommand(spec.manager, ['reset-failed', `${spec.id}.service`])
+      if (spec.manager === 'systemd') await managerCommand(spec.manager, ['reset-failed', `${spec.id}.service`], spec.system)
     }
     if (action === 'restart' || current === 'stopped' || current === 'failed') {
       if (await canConnect(plan.port)) throw new Error(`port ${plan.port} is already in use`)
       if (spec.manager === 'launchd') await managerCommand(spec.manager, ['bootstrap', domain(), spec.definition])
-      else await managerCommand(spec.manager, ['start', `${spec.id}.service`])
+      else await managerCommand(spec.manager, ['start', `${spec.id}.service`], spec.system)
     }
-    await waitForHealth(plan, undefined, plan.managed_backend ? 90_000 : 15_000).catch((error: Error) => {
+    await waitForHealth(plan, undefined, plan.managed_backend || plan.service === 'nodeos' ? 90_000 : 15_000).catch((error: Error) => {
       throw new Error(`${error.message}. Run harbor service logs ${service.name} --supervisor`, {cause: error})
     })
   }

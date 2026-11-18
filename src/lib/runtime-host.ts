@@ -22,5 +22,5 @@ export function runtimeTarget(platform = process.platform, arch = process.arch):
 }
 
 export function releaseAsset(daemon: string, target = runtimeTarget()): string {
-  return `${daemon}-${target}`
+  return `${daemon}-${target.replace(/^macos-/, 'darwin-')}`
 }

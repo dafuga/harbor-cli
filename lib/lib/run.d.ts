@@ -14,6 +14,8 @@ export interface HarborRunOptions extends Omit<ResolveArtifactOptions, 'service'
     json?: boolean;
     dryRun?: boolean;
     modelProfile?: string;
+    genesisJson?: string;
+    idleOnly?: boolean;
 }
 export interface HarborRunPlan {
     service: string;
@@ -28,12 +30,14 @@ export interface HarborRunPlan {
     port: number;
     command: string[];
     log: string;
+    usage_file: string;
     limits: ResourceLimits;
     cwd: string;
     backend_key_env?: string;
     backend_local?: boolean;
     model_profile?: ReturnType<typeof localModel>;
     managed_backend?: ManagedBackend;
+    idle_only?: boolean;
     artifact?: ResolvedArtifact;
     dry_run: boolean;
 }
@@ -41,6 +45,9 @@ export declare function renderRuntimeConfig(input: {
     dataDir: string;
     basePort: number;
     historyRepo?: string;
+    url?: string;
+    marketContract?: string;
+    storageContract?: string;
 } & BackendOptions): string;
 export declare function buildRunPlan(service: ServiceRuntime, options: HarborRunOptions): Promise<HarborRunPlan>;
 export declare function serviceHealthy(port: number, service: string): Promise<boolean>;

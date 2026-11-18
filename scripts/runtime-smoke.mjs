@@ -45,22 +45,35 @@ async function stopForeground() {
   }
 }
 
+const backendFixture = path.join(home, 'ollama-fixture')
+const modelName = 'qwen3:8b-q4_K_M'
+await fs.writeFile(backendFixture, `#!${process.execPath}
+const {createServer} = require('node:http')
+const model = ${JSON.stringify(modelName)}
 const backend = createServer(async (request, response) => {
+  response.setHeader('Content-Type', 'application/json')
+  if (request.url === '/api/tags') {
+    response.end(JSON.stringify({models: [{name: model, details: {quantization_level: 'Q4_K_M'}}]}))
+    return
+  }
   const chunks = []
   for await (const chunk of request) chunks.push(chunk)
   const payload = JSON.parse(Buffer.concat(chunks))
-  const model = 'qwen3:8b-q4_K_M'
   if (payload.model !== model || request.headers.authorization !== 'Bearer harbor-local') {
     response.writeHead(400).end('{}')
     return
   }
-  response.setHeader('Content-Type', 'application/json')
   response.end(JSON.stringify({
     model,
-    choices: [{index: 0, message: {role: 'assistant', content: `Received: ${payload.messages.at(-1).content}`}, finish_reason: 'stop'}],
+    choices: [{index: 0, message: {role: 'assistant', content: 'Received: ' + payload.messages.at(-1).content}, finish_reason: 'stop'}],
     usage: {prompt_tokens: 4, completion_tokens: 5},
   }))
 })
+backend.listen(Number(process.env.OLLAMA_HOST.split(':').at(-1)), '127.0.0.1')
+process.on('SIGTERM', () => backend.close(() => process.exit(0)))
+`, {mode: 0o700})
+
+const backendReservation = createServer()
 const portReservation = createServer()
 
 try {
@@ -68,20 +81,25 @@ try {
   const manager = doctor.checks.find(({check}) => check === 'service-manager')
   if (!foregroundOnly) assert.equal(manager.ok, true, manager.value)
   report('harbor doctor --json', `${doctor.platform} · ${doctor.runtime} · ${manager.value}`)
-  const backendPort = await bind(backend)
+  const backendPort = await bind(backendReservation)
   const servicePort = await bind(portReservation)
-  await new Promise((resolve) => portReservation.close(resolve))
+  await Promise.all([portReservation, backendReservation].map((server) => new Promise((resolve) => server.close(resolve))))
   const health = `http://127.0.0.1:${servicePort}/health`
   const options = [
     'aiinfer', '--source', 'local', '--config', config, '--port', String(servicePort),
     '--model-profile', 'flagship', '--backend-endpoint', `http://127.0.0.1:${backendPort}/v1/chat/completions`,
+    '--ollama', backendFixture,
   ]
   const plan = await harbor('run', ...options, '--dry-run')
   assert.equal(plan.port, servicePort)
   assert.equal(plan.limits.cpu_percent, 40)
   assert.equal(plan.limits.memory_percent, 40)
-  assert.equal(plan.model_profile.model, 'qwen3:8b-q4_K_M')
-  report('harbor run aiinfer --dry-run', `${plan.release_asset} · 40% CPU · 40% memory`)
+  assert.equal(plan.limits.gpu_percent, 40)
+  assert.equal(plan.model_profile.model, modelName)
+  assert.equal(plan.managed_backend.engine, 'ollama')
+  report('harbor run aiinfer --dry-run', `${plan.release_asset} · 40% CPU / GPU / memory`)
+  // Small CI runners can exercise the mock backend with a larger budget without loading model weights.
+  if (!plan.model_profile.fits_memory_cap) options.push('--memory-percent', '100')
   const model = await harbor('ai', 'local-model', '--model-profile', 'flagship', '--json')
   assert.equal(model.expert_training, 'QLoRA')
   report('harbor ai local-model --model-profile flagship', `${model.model} · ${model.expert_adapter_base} adapter base`)
@@ -126,7 +144,8 @@ try {
     report('harbor service stop / uninstall aiinfer', 'Stopped and unregistered')
   }
   assert.equal(await fetch(health, {signal: AbortSignal.timeout(1000)}).then(() => true).catch(() => false), false)
-  report('Verify shutdown', 'Inference port closed')
+  assert.equal(await fetch(`http://127.0.0.1:${backendPort}/api/tags`, {signal: AbortSignal.timeout(1000)}).then(() => true).catch(() => false), false)
+  report('Verify shutdown', 'Inference and managed backend ports closed')
   if (evidence) {
     await fs.mkdir(evidence, {recursive: true})
     const stem = doctor.runtime === 'wsl2' ? `windows-wsl2-${process.arch}` : doctor.platform
@@ -156,8 +175,7 @@ try {
 } finally {
   if (registered) await harbor('service', 'uninstall', 'aiinfer', '--json')
   await stopForeground()
-  backend.closeAllConnections()
-  backend.close()
+  backendReservation.close()
   portReservation.close()
   await fs.rm(home, {recursive: true, force: true})
 }

@@ -1,7 +1,8 @@
 import fs from 'node:fs/promises'
 import {Command} from 'commander'
 import {executableExists, normalizeServiceName} from '../lib/artifacts.js'
-import {resourceLimits} from '../lib/resource-limits.js'
+import {gpuCapacity, hostState} from '../lib/host-policy.js'
+import {configuredLimits} from '../lib/resource-limits.js'
 import {buildRunPlan, serviceHealthy} from '../lib/run.js'
 import {hostPlatform, isWsl, releaseAsset, runtimeTarget} from '../lib/runtime-host.js'
 import {serviceManager, verifyServiceManager} from '../lib/service-manager.js'
@@ -49,7 +50,7 @@ async function unixChecks(options: {service?: string; config?: string}): Promise
   checks.push(await check('service-health', async () => {
     const plan = await buildRunPlan(service, {dryRun: true, config: options.config})
     if (!await serviceHealthy(plan.port, service.name)) throw new Error(`${service.name} is not healthy on port ${plan.port}`)
-    return `http://127.0.0.1:${plan.port}/health`
+    return `http://127.0.0.1:${plan.port}${service.name === 'nodeos' ? '/v1/chain/get_info' : '/health'}`
   }))
   if (options.config) {
     checks.push(await check('runtime-config', async () => {
@@ -75,7 +76,9 @@ export function createDoctorCommand(): Command {
       const result = {
         platform: hostPlatform(),
         runtime: windows || isWsl() ? 'wsl2' : process.platform,
-        limits: windows ? undefined : resourceLimits(),
+        limits: windows ? undefined : await configuredLimits(),
+        host: windows ? undefined : await hostState(),
+        gpu: windows ? undefined : await gpuCapacity(),
         ok: checks.every((item) => item.ok),
         checks,
       }

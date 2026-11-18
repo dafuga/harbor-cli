@@ -50,6 +50,8 @@ export interface ResolvedArtifact {
     provenance: string;
 }
 export declare const SERVICE_RUNTIMES: ServiceRuntime[];
+export declare const NODE_RUNTIME: ServiceRuntime;
+export declare function isNodeRuntime(service: ServiceRuntime): boolean;
 export declare function normalizeServiceName(name: string): ServiceRuntime;
 export declare function executableExists(binary: string): Promise<boolean>;
 export declare function validateArtifactVersion(version: string): void;
