@@ -1,11 +1,15 @@
 import {spawnSync} from 'node:child_process'
+import {randomUUID} from 'node:crypto'
+import {constants} from 'node:fs'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import {harborHome} from './config.js'
+import {releaseAsset, runtimeTarget} from './runtime-host.js'
 import {downloadStoredObjectBytes, resolveStorageObjectByHash, sha256Bytes, StorageObjectRow} from './storage.js'
 import {getTableRows} from './tx.js'
 
 export {sha256Bytes} from './storage.js'
+export {hostPlatform} from './runtime-host.js'
 
 export type ArtifactSource = 'auto' | 'local' | 'harbor-storage' | 'github' | 'url'
 
@@ -37,6 +41,7 @@ export interface ArtifactRecord {
   sha256?: string
   installedAt: string
   provenance: string
+  target?: string
 }
 
 export interface ResolveArtifactOptions {
@@ -86,11 +91,6 @@ export const SERVICE_RUNTIMES: ServiceRuntime[] = [
   {name: 'scheduler', aliases: ['check-scheduler'], daemon: 'harbor-check-scheduler', serviceTypeId: 13, portOffset: 50},
 ]
 
-function platformName(): string {
-  const platform = process.platform === 'darwin' ? 'macos' : process.platform
-  return `${platform}-${process.arch}`
-}
-
 export function normalizeServiceName(name: string): ServiceRuntime {
   const normalized = name.trim().toLowerCase().replaceAll('_', '-')
   const service = SERVICE_RUNTIMES.find((item) => item.name === normalized || item.aliases.includes(normalized))
@@ -112,28 +112,58 @@ async function readRecords(): Promise<ArtifactRecord[]> {
   }
 }
 
-async function writeRecord(record: ArtifactRecord): Promise<void> {
-  const records = (await readRecords()).filter((item) => !(item.service === record.service && item.version === record.version))
-  records.push(record)
-  await fs.mkdir(path.dirname(artifactsPath()), {recursive: true})
-  await fs.writeFile(artifactsPath(), `${JSON.stringify(records, null, 2)}\n`)
+async function writeAtomic(file: string, content: string | Buffer, mode: number): Promise<void> {
+  const temporary = `${file}.${randomUUID()}.tmp`
+  try {
+    await fs.writeFile(temporary, content, {mode, flag: 'wx'})
+    await fs.rename(temporary, file)
+  } finally {
+    await fs.rm(temporary, {force: true})
+  }
 }
 
-async function executableExists(binary: string): Promise<boolean> {
+export async function executableExists(binary: string): Promise<boolean> {
   try {
-    await fs.access(binary)
-    return true
+    await fs.access(binary, constants.X_OK)
+    return (await fs.stat(binary)).isFile()
   } catch {
     return false
   }
 }
 
 async function findCached(service: ServiceRuntime, version: string): Promise<ResolvedArtifact | null> {
-  const record = (await readRecords()).find((item) => item.service === service.name && item.version === version)
-  if (record && await executableExists(record.binary)) {
-    return {...record, installed: false}
+  const target = runtimeTarget()
+  try {
+    const record = JSON.parse(await fs.readFile(path.join(artifactDirectory(service, version), 'artifact.json'), 'utf8')) as ArtifactRecord
+    if (record.target === target && record.binary === artifactBinary(service, version, record.sha256) &&
+        await executableExists(record.binary)) {
+      return {...record, installed: false}
+    }
+  } catch {
+    // Check installations created by earlier versions.
   }
+  const old = (await readRecords()).find((item) => item.service === service.name && item.version === version)
+  if (old && await executableExists(old.binary) && await matchesLegacyHost(old.binary).catch(() => false)) return {...old, installed: false}
   return null
+}
+
+async function matchesLegacyHost(binary: string): Promise<boolean> {
+  const file = await fs.open(binary, 'r')
+  try {
+    const header = Buffer.alloc(20)
+    await file.read(header)
+    if (header.toString('ascii', 0, 2) === '#!') return true
+    if (header.readUInt32LE(0) === 0xfeedfacf) {
+      return process.platform === 'darwin' && header.readUInt32LE(4) === (process.arch === 'arm64' ? 0x0100000c : 0x01000007)
+    }
+    if (header.readUInt32BE(0) === 0x7f454c46 && header[4] === 2 && header[5] === 1) {
+      return process.platform === 'linux' && header.readUInt16LE(18) === (process.arch === 'arm64' ? 183 : 62)
+    }
+    // macOS can select the matching slice of a universal binary at launch.
+    return process.platform === 'darwin' && [0xcafebabe, 0xcafebabf].includes(header.readUInt32BE(0))
+  } finally {
+    await file.close()
+  }
 }
 
 function siblingOpportunitiesRepo(): string {
@@ -141,9 +171,9 @@ function siblingOpportunitiesRepo(): string {
 }
 
 async function resolvePathBinary(binary: string): Promise<string | null> {
-  const paths = (process.env.PATH ?? '').split(path.delimiter)
+  const paths = (process.env.PATH ?? '').split(path.delimiter).filter(Boolean)
   for (const dir of paths) {
-    const candidate = path.join(dir, binary)
+    const candidate = path.resolve(dir, binary)
     if (await executableExists(candidate)) {
       return candidate
     }
@@ -152,7 +182,12 @@ async function resolvePathBinary(binary: string): Promise<string | null> {
 }
 
 async function resolveLocal(service: ServiceRuntime, version: string, forceInstall?: boolean): Promise<ResolvedArtifact | null> {
-  const repo = siblingOpportunitiesRepo()
+  const packagedDir = process.env.HARBOR_DAEMON_DIR
+  if (packagedDir) {
+    const binary = path.resolve(packagedDir, service.daemon)
+    if (await executableExists(binary)) return {binary, version, source: 'local', installed: false, provenance: packagedDir}
+  }
+  const repo = path.resolve(siblingOpportunitiesRepo())
   const buildBinary = path.join(repo, 'build', service.daemon)
   if (!forceInstall && await executableExists(buildBinary)) {
     return {binary: buildBinary, version, source: 'local', installed: false, provenance: repo}
@@ -181,16 +216,32 @@ async function resolveLocal(service: ServiceRuntime, version: string, forceInsta
   return pathBinary ? {binary: pathBinary, version, source: 'path', installed: false, provenance: 'PATH'} : null
 }
 
+class DownloadError extends Error {
+  constructor(readonly status: number, url: string) {
+    super(`download failed ${status}: ${url}`)
+  }
+}
+
 async function download(url: string): Promise<Buffer> {
-  const response = await fetch(url)
+  const response = await fetch(url, {signal: AbortSignal.timeout(120_000)})
   if (!response.ok) {
-    throw new Error(`download failed ${response.status}: ${url}`)
+    throw new DownloadError(response.status, url)
   }
   return Buffer.from(await response.arrayBuffer())
 }
 
-function installPath(service: ServiceRuntime, version: string): string {
-  return path.join(harborHome(), 'bin', service.name, version, service.daemon)
+export function validateArtifactVersion(version: string): void {
+  if (!/^[A-Za-z0-9][A-Za-z0-9._+-]{0,127}$/.test(version)) throw new Error(`invalid artifact version: ${version}`)
+}
+
+function artifactDirectory(service: ServiceRuntime, version: string): string {
+  validateArtifactVersion(version)
+  return path.resolve(harborHome(), 'bin', service.name, version, runtimeTarget())
+}
+
+export function artifactBinary(service: ServiceRuntime, version: string, sha256?: string): string {
+  if (sha256 !== undefined && !/^[a-f0-9]{64}$/.test(sha256)) throw new Error('invalid binary SHA-256')
+  return path.join(artifactDirectory(service, version), ...(sha256 ? [sha256] : []), service.daemon)
 }
 
 export async function installDownloadedBinary(input: {
@@ -202,14 +253,13 @@ export async function installDownloadedBinary(input: {
   provenance: string
 }): Promise<ResolvedArtifact> {
   const actual = sha256Bytes(input.bytes)
-  if (actual !== input.expectedSha256) {
+  if (actual !== input.expectedSha256.toLowerCase()) {
     throw new Error(`checksum mismatch for ${input.service.name}: expected ${input.expectedSha256}, got ${actual}`)
   }
-  const binary = installPath(input.service, input.version)
+  const binary = artifactBinary(input.service, input.version, actual)
   await fs.mkdir(path.dirname(binary), {recursive: true})
-  await fs.writeFile(binary, input.bytes, {mode: 0o755})
-  await fs.chmod(binary, 0o755)
-  await writeRecord({
+  await writeAtomic(binary, input.bytes, 0o755)
+  const record: ArtifactRecord = {
     service: input.service.name,
     version: input.version,
     source: input.source,
@@ -217,7 +267,9 @@ export async function installDownloadedBinary(input: {
     sha256: actual,
     installedAt: new Date().toISOString(),
     provenance: input.provenance,
-  })
+    target: runtimeTarget(),
+  }
+  await writeAtomic(path.join(artifactDirectory(input.service, input.version), 'artifact.json'), `${JSON.stringify(record, null, 2)}\n`, 0o600)
   return {binary, version: input.version, source: input.source, sha256: actual, installed: true, provenance: input.provenance}
 }
 
@@ -252,10 +304,10 @@ function parseShaSums(text: string, artifactName: string): string | null {
   return null
 }
 
-async function resolveGithub(options: ResolveArtifactOptions, version: string): Promise<ResolvedArtifact> {
-  const repo = process.env.HARBOR_OPPORTUNITIES_GITHUB_REPO ?? 'dafuga/harbor-opportunities'
-  const artifactName = `${options.service.daemon}-${platformName()}`
-  const release = version === 'latest' || version === 'dev' ? 'latest/download' : `download/${version}`
+async function resolveGithubRepository(options: ResolveArtifactOptions, version: string, repo: string): Promise<ResolvedArtifact> {
+  if (!/^[\w.-]+\/[\w.-]+$/.test(repo)) throw new Error('GitHub artifact repository must use owner/repo format')
+  const artifactName = releaseAsset(options.service.daemon)
+  const release = version === 'latest' || version === 'dev' ? 'latest/download' : `download/${encodeURIComponent(version)}`
   const base = `https://github.com/${repo}/releases/${release}`
   let checksum = options.sha256
   if (!checksum) {
@@ -281,6 +333,17 @@ async function resolveGithub(options: ResolveArtifactOptions, version: string): 
   })
 }
 
+async function resolveGithub(options: ResolveArtifactOptions, version: string): Promise<ResolvedArtifact> {
+  const repo = process.env.HARBOR_OPPORTUNITIES_GITHUB_REPO
+  if (repo) return resolveGithubRepository(options, version, repo)
+  try {
+    return await resolveGithubRepository(options, version, 'dafuga/harbor-cli')
+  } catch (error) {
+    if (!(error instanceof DownloadError) || error.status !== 404) throw error
+    return resolveGithubRepository(options, version, 'dafuga/harbor-opportunities')
+  }
+}
+
 function artifactMetadataMatches(row: StorageObjectRow, service: ServiceRuntime, version: string): boolean {
   if (!row.metadata) {
     return false
@@ -290,10 +353,20 @@ function artifactMetadataMatches(row: StorageObjectRow, service: ServiceRuntime,
     return metadata.kind === 'harbor-artifact-manifest' &&
       metadata.service === service.name &&
       metadata.version === version &&
-      (!metadata.platform || metadata.platform === platformName())
+      (!metadata.platform || manifestTarget(metadata.platform, metadata.arch) === runtimeTarget())
   } catch {
     return false
   }
+}
+
+function manifestTarget(platform: unknown, arch: unknown): string {
+  if (typeof platform !== 'string') return ''
+  const normalized = platform.replace(/^darwin(?=-|$)/, 'macos')
+  const architecture = arch === 'aarch64' ? 'arm64' : arch === 'x86_64' ? 'x64' : arch
+  if (normalized.includes('-')) {
+    return architecture && !normalized.endsWith(`-${architecture}`) ? '' : normalized
+  }
+  return `${normalized}-${architecture ?? ''}`
 }
 
 async function findArtifactManifestHash(options: ResolveArtifactOptions, version: string): Promise<string> {
@@ -328,7 +401,8 @@ async function resolveHarborStorage(options: ResolveArtifactOptions, version: st
     expectedSha256: manifestObject.content_hash,
   })
   const manifest = JSON.parse(manifestBytes.bytes.toString('utf8')) as ArtifactManifest
-  if (manifest.kind !== 'harbor-artifact-manifest' || manifest.service !== options.service.name) {
+  if (manifest.kind !== 'harbor-artifact-manifest' || manifest.service !== options.service.name ||
+      manifest.version !== version || manifestTarget(manifest.platform, manifest.arch) !== runtimeTarget()) {
     throw new Error(`invalid artifact manifest for ${options.service.name}`)
   }
   const binary = await downloadStoredObjectBytes({
@@ -351,6 +425,8 @@ async function resolveHarborStorage(options: ResolveArtifactOptions, version: st
 export async function resolveArtifact(options: ResolveArtifactOptions): Promise<ResolvedArtifact> {
   const source = options.source ?? 'auto'
   const version = options.version ?? 'dev'
+  runtimeTarget()
+  validateArtifactVersion(version)
   if (!options.forceInstall && source === 'auto') {
     const cached = await findCached(options.service, version)
     if (cached) {
@@ -399,8 +475,4 @@ export function defaultRuntimeConfigPath(): string {
 
 export function defaultRuntimeDataDir(): string {
   return path.join(harborHome(), 'runtime-data')
-}
-
-export function hostPlatform(): string {
-  return platformName()
 }

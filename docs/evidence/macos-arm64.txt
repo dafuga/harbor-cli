@@ -1,0 +1,26 @@
+$ harbor doctor --json
+macos-arm64 · darwin · launchd
+
+$ harbor run aiinfer --dry-run
+harbor-aiinferd-macos-arm64 · 40% CPU · 40% memory
+
+$ harbor ai local-model --model-profile flagship
+qwen3:8b-q4_K_M · Qwen/Qwen3-8B adapter base
+
+$ harbor service install aiinfer
+Registered with launchd
+
+$ harbor service start aiinfer
+Running and healthy
+
+$ POST /ai/infer
+HTTP 200 · OpenAI-compatible test backend response verified
+
+$ harbor service restart aiinfer
+Running and healthy
+
+$ harbor service stop / uninstall aiinfer
+Stopped and unregistered
+
+$ Verify shutdown
+Inference port closed

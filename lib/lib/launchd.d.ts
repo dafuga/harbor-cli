@@ -3,4 +3,6 @@ export declare function renderLaunchdPlist(input: {
     command: string;
     args?: string[];
     workingDirectory?: string;
+    restartOnFailure?: boolean;
+    supervisorLog?: string;
 }): string;

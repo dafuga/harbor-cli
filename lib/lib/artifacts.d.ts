@@ -1,4 +1,5 @@
 export { sha256Bytes } from './storage.js';
+export { hostPlatform } from './runtime-host.js';
 export type ArtifactSource = 'auto' | 'local' | 'harbor-storage' | 'github' | 'url';
 export interface ServiceRuntime {
     name: string;
@@ -26,6 +27,7 @@ export interface ArtifactRecord {
     sha256?: string;
     installedAt: string;
     provenance: string;
+    target?: string;
 }
 export interface ResolveArtifactOptions {
     service: ServiceRuntime;
@@ -49,6 +51,9 @@ export interface ResolvedArtifact {
 }
 export declare const SERVICE_RUNTIMES: ServiceRuntime[];
 export declare function normalizeServiceName(name: string): ServiceRuntime;
+export declare function executableExists(binary: string): Promise<boolean>;
+export declare function validateArtifactVersion(version: string): void;
+export declare function artifactBinary(service: ServiceRuntime, version: string, sha256?: string): string;
 export declare function installDownloadedBinary(input: {
     service: ServiceRuntime;
     version: string;
@@ -60,4 +65,3 @@ export declare function installDownloadedBinary(input: {
 export declare function resolveArtifact(options: ResolveArtifactOptions): Promise<ResolvedArtifact>;
 export declare function defaultRuntimeConfigPath(): string;
 export declare function defaultRuntimeDataDir(): string;
-export declare function hostPlatform(): string;

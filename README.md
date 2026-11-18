@@ -524,12 +524,12 @@ ABI-legacy `ciphertext_hash`. `ciphertext_commitment` is a separate inner hash
 of the nonce and AEAD ciphertext; it must not be substituted for the storage
 content hash. The CLI prints both names explicitly.
 
-`harbor run <service>` is the foreground enterprise runner for local operators.
-It resolves a service binary from an existing install, sibling local repos,
-Harbor chain storage, GitHub releases, or a direct URL; downloaded binaries must
-match a SHA-256 checksum. Runtime binaries are cached under `~/.harbor/bin`,
-provenance is recorded in `~/.harbor/artifacts.json`, config is generated at
-`~/.harbor/runtime.toml`, and logs are mirrored to `~/.harbor/logs`.
+`harbor run <service>` runs a daemon in the foreground. `harbor service`
+manages background services through launchd on macOS and systemd on Linux and
+Windows WSL2. `harbor doctor --json` diagnoses the local runtime. Downloads
+are SHA-256 verified and cached with per-platform provenance under
+`~/.harbor/bin`. Runtime config and logs live in `~/.harbor` by default.
+See the [runtime setup and CLI contract](docs/runtime.md).
 
 The bank commands target the `harborbank` vault contract. High-value
 withdrawals are a two-step flow: the multisig proposal executes the
@@ -540,7 +540,7 @@ The AI commands wrap the Harbor AI contracts and the service market. `harbor ai
 offer inference`, `harbor ai offer training`, and `harbor ai offer router`
 register the provider if needed, stake it, and add the correct `svcmarket`
 service type (`aiinfer`, `aitrain`, or `airouter`). Run `harbor run aiinfer`
-with `HARBOR_AI_BACKEND_ENDPOINT` pointing at a local GPU HTTP backend to earn
+with the local Qwen profile or point `HARBOR_AI_BACKEND_ENDPOINT` at a raw HTTP backend to earn
 inference fees through `harborai::completeinf`; route clients through
 `harbor run router` or `harbor run airouter`. The separate `keycustody` service
 type can be installed with `harbor run keycustody`; it reserves one-time public
