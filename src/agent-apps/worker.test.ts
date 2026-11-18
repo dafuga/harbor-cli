@@ -79,3 +79,56 @@ test('the worker persists scheduled and triggered runs, reserves spend, and veri
     await rm(dir, {recursive: true, force: true})
   }
 })
+
+test('a paused in-flight run retains its reservation without rebroadcast across workers', async () => {
+  const {AgentWorker} = await import('./worker.js')
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'harbor-agent-reservation-'))
+  const file = path.join(dir, 'agent.sqlite')
+  let markStarted!: () => void
+  const started = new Promise<void>(resolve => { markStarted = resolve })
+  const network: Network = {
+    models: [{id: 'flagship', label: 'Qwen3 8B 4-bit'}],
+    currency: {symbol: 'TEST', precision: 4},
+    async quote(_agent, _prompt, budget) {
+      if (budget < 100) throw new Error('Insufficient budget')
+      return {maxCost: 100, deployment: '1'}
+    },
+    async execute({starting, submitted, signal}) {
+      starting()
+      submitted('7')
+      markStarted()
+      return new Promise((_resolve, reject) => {
+        signal.addEventListener('abort', () => reject(signal.reason), {once: true})
+      })
+    },
+    async reconcile() { return 30 },
+    async verify() { throw new Error('Unexpected verifier') },
+    async readFile() { throw new Error('Unexpected file read') },
+    async useSecret() { throw new Error('Unexpected secret use') },
+  }
+  const first = new AgentWorker(file, 'Studio worker', network)
+  const second = new AgentWorker(file, 'Studio worker', network)
+  try {
+    const agent = first.createAgent(source)
+    const original = first.confirm((await first.quote(agent.id, 'First authorized task')).id)
+    const queued = second.confirm((await second.quote(agent.id, 'Second authorized task')).id)
+    const working = first.tick()
+    await started
+    await second.tick()
+    assert.equal(second.snapshot(agent.id).runs.find(run => run.id === queued.id)?.status, 'queued')
+    first.setStatus(agent.id, 'paused')
+    await working
+    const snapshot = second.snapshot(agent.id)
+    assert.equal(snapshot.runs.find(run => run.id === original.id)?.status, 'needs_attention')
+    assert.equal(snapshot.runs.find(run => run.id === queued.id)?.status, 'cancelled')
+    assert.equal(snapshot.agents[0].reserved, 100)
+    first.close()
+    assert.equal((await second.reconcile(original.id)).paid, 30)
+    assert.equal(second.snapshot(agent.id).agents[0].reserved, 0)
+    assert.equal(second.snapshot(agent.id).audit.filter(entry => entry.event === 'inference_dispatch').length, 1)
+  } finally {
+    first.close()
+    second.close()
+    await rm(dir, {recursive: true, force: true})
+  }
+})
