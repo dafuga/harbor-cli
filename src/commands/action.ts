@@ -11,6 +11,7 @@ export interface ActionOptions {
   auth?: string
   json?: boolean
   expiration?: string
+  expectChainId?: string
 }
 
 export function addTxOptions<T extends Command>(command: T): T {
@@ -21,6 +22,7 @@ export function addTxOptions<T extends Command>(command: T): T {
     .option('-k, --key <key>', 'wallet key name, public key, or comma-separated names')
     .option('--auth <actor@permission>', 'action authorization; defaults to actor@permission')
     .option('--expiration <seconds>', 'transaction expiration seconds', '300')
+    .option('--expect-chain-id <id>', 'require this chain ID before signing')
     .option('--json', 'print JSON') as T
 }
 
@@ -36,6 +38,7 @@ export async function pushJsonAction(contract: string, action: string, data: unk
     authorization: options.auth,
     json: options.json,
     expiration: options.expiration,
+    expectChainId: options.expectChainId,
   }, review)
   printResult(result, options.json)
 }
