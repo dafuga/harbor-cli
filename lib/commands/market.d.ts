@@ -1,5 +1,5 @@
 import { Command } from 'commander';
-import { MarketOptions as OpportunityMarketOptions, MarketSnapshot, Opportunity } from '@harbor/opportunities/market';
+import { MarketOptions as OpportunityMarketOptions, MarketSnapshot, Opportunity } from '../lib/opportunities.js';
 import type { Field } from './action-fields.js';
 export interface MarketOptions extends OpportunityMarketOptions {
     url: string;

@@ -26,21 +26,14 @@ asset. GitHub's automatically generated source archive is for source checkouts.
 Pass `--prefix "$HOME/.local"` to the installer if you need a writable prefix,
 and include `$HOME/.local/bin` on your `PATH`.
 
-**While development is private**, you need GitHub access to both
-`dafuga/harbor-cli` and its runtime dependency `dafuga/harbor-opportunities`.
-From a source checkout, run `npm ci` and `npm pack`, then install the printed
-archive path with `sh install.sh --tarball ./dafuga-harbor-cli-0.1.0.tgz`. To
-install from an accessible GitHub branch:
+To install from GitHub or an npm package tarball:
 
 ```sh
-env npm_config_global=false NPM_CONFIG_GLOBAL=false \
-  npm install -g github:dafuga/harbor-cli#main
+npm install -g github:dafuga/harbor-cli
+npm install -g ./dafuga-harbor-cli-0.1.0.tgz
 ```
 
-The two command-scoped environment settings keep npm's nested Git dependency
-builds local despite [npm CLI issue #8440](https://github.com/npm/cli/issues/8440).
-The installer applies the same settings. Anonymous release installs require a
-publicly fetchable runtime dependency.
+Run `npm ci` and `npm pack` in the source checkout to produce the tarball.
 
 ```sh
 harbor-cli --help
@@ -383,11 +376,8 @@ for themselves with `harbor market opportunities unable`; later
 `--agent <account>` planning reads those on-chain markers and skips blocked
 opportunities such as domain-backed router or site-gateway work.
 
-The opportunity planner is implemented by the private
-`dafuga/harbor-opportunities` package. `harbor-cli` keeps the user-facing
-`harbor market opportunities` command so humans, scripts, and runtimes share one
-command surface, but the market scoring and service-boundary guidance live in
-`harbor-opportunities`.
+The CLI includes the Harbor Opportunities market planner. Its source version
+and license are recorded in `NOTICE`.
 
 The agent commands create a local `~/.harbor/config.json`, check local service
 ports, and generate launchd plists. `harbor storage put` streams public files

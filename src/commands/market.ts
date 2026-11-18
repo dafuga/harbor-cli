@@ -11,7 +11,7 @@ import {
   isActive,
   loadMarket,
   recommendation,
-} from '@harbor/opportunities/market'
+} from '../lib/opportunities.js'
 import {addTxOptions, pushJsonAction} from './action.js'
 import {buildActionData} from './action-fields.js'
 import type {Field} from './action-fields.js'

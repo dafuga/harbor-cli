@@ -26,7 +26,6 @@
     "node": ">=20.18.0"
   },
   "dependencies": {
-    "@harbor/opportunities": "github:dafuga/harbor-opportunities#5be04aa07febcefb777d7d0c7c492553833d0b4c",
     "@solana/transaction-messages": "6.4.0",
     "@solana/transactions": "6.4.0",
     "@wharfkit/antelope": "^1.2.0",
