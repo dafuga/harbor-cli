@@ -3,6 +3,144 @@
 Harbor CLI helps Mac Mini agents discover Harbor service-market opportunities,
 run local service checks, and interact with the Harbor service market contract.
 
+## HRBR multisig signing keys
+
+Build with Node.js 20.18 or later using `npm ci && npm run build`. Run
+`node lib/index.js` from the checkout, or use the installed `harbor` binary.
+Give each device a distinct key name and use a separate `HARBOR_HOME` for
+rehearsal keys. The examples below target a loopback test chain.
+
+### Set up three independent Harbor signers
+
+| Device | Signer | Setup command |
+| --- | --- | --- |
+| Primary Mac | Antelope R1 in the Secure Enclave | `harbor keys create hrbr-one --type R1 --storage enclave --json` |
+| MB2 or a hardware wallet | A second Secure Enclave R1 or a Ledger with compatible Antelope signing software | `harbor keys create hrbr-two --type R1 --storage enclave --json` on MB2 |
+| Separate recovery device | Password-encrypted Antelope key | `harbor keys create hrbr-three --type K1 --json` |
+
+The macOS backend requires Secure Enclave hardware, the Xcode Command Line
+Tools, and an unlocked desktop login. macOS gates key use with Touch ID or a
+password. Explicit `--storage enclave` fails if this backend is unavailable.
+Without `--storage`, R1 uses the enclave on supported Macs and the encrypted
+store on machines without an enclave. K1 and Solana ed25519 always use the
+encrypted store. Linux can explicitly select `--storage encrypted` for R1.
+
+`harbor keys list --json` prints only names, public keys, and storage types.
+Use `--key <name>` for signing. Raw private keys supplied through `--key`,
+`HARBOR_PRIVATE_KEY`, or `WHARFKIT_DEPLOY_KEY` are rejected. Import keys using
+the hidden prompt or create a Secure Enclave key, then select it by name.
+New software keys are stored under
+`${HARBOR_HOME:-~/.harbor}/keys/` in mode `0600`, encrypted with scrypt
+(`N=131072, r=8, p=1`) and AES-256-GCM. Use a strong, unique passphrase per
+key. The terminal prompts without echo and confirms new passphrases. The
+`HARBOR_KEY_PASSWORD_FD` environment variable can name an inherited descriptor
+(`3` or greater) carrying one passphrase for a single encrypted key and one
+invocation. Pass the descriptor number only.
+
+To import a recovery key, run `harbor keys import hrbr-three` and enter it at
+the hidden prompt. Existing plaintext `wallet.json` files remain readable for
+legacy callers. Rehearse rotation to newly provisioned secure keys before
+retiring any legacy signer or its backups. The legacy `wallet keys:create`
+and `wallet keys:add` commands now write secure entries.
+
+### Rehearse on Harbor
+
+1. Create or select three signer accounts on the test chain. Set each
+   account's `active` permission to its device's public key. Use
+   `harbor account create <creator> <account> --owner-key <owner-pub> --active-key <signer-pub> --key <creator-key>`
+   or `harbor account set-permission <account> active owner <authority-json> --permission owner --key <owner-key>`.
+   Read back each account with `harbor account info <account>`.
+2. Set the treasury's operational permission to threshold 2, with three
+   account permission entries, each of weight 1. Protect any higher-level
+   treasury permission that could override this threshold with equivalent
+   quorum controls. Confirm that only the intended permission levels can
+   authorize the bridge and treasury actions.
+3. Rehearse propose, review, approve, and execute. Each signer reviews the
+   decoded proposal on a trusted endpoint and uses the same proposal hash.
+
+```sh
+export HARBOR_API_URL=http://127.0.0.1:8888
+
+harbor account set-permission treasury active owner \
+  '{"threshold":2,"accounts":[{"permission":"signerone@active","weight":1},{"permission":"signertwo@active","weight":1},{"permission":"signerthree@active","weight":1}]}' \
+  --permission owner --key treasury-owner
+
+harbor msig propose rehearsal eosio reqauth '{"from":"treasury"}' \
+  --actor signerone --key hrbr-one --action-auth treasury@active \
+  --requested signerone@active,signertwo@active,signerthree@active
+harbor msig show signerone rehearsal
+# Set REVIEWED_HASH to the proposal_hash after reviewing the decoded action.
+harbor msig approve signerone rehearsal signerone@active --proposal-hash "$REVIEWED_HASH" --key hrbr-one
+harbor msig approve signerone rehearsal signertwo@active --proposal-hash "$REVIEWED_HASH" --key hrbr-two
+harbor msig exec signerone rehearsal --actor signerone --key hrbr-one
+```
+
+Run the second approval on the second signer's device against the same trusted
+test endpoint. `harbor msig propose` and `harbor action sign` show decoded
+actions, accounts, amounts where applicable, and expiration on stderr.
+Review the transaction and confirm at the terminal. Pass `--yes` for
+noninteractive signing. `harbor action sign` creates an ABI-packed
+transaction without broadcasting. Use
+`harbor sign transaction <file> --chain-id <id> --key <name>` to add another
+local signature without an RPC connection. `harbor action
+push` and `harbor contract deploy` use the same signer selection.
+
+### Set up Solana Squads signers
+
+Use a Ledger for each hardware-held Solana member. The Secure Enclave backend
+supports P-256 and Solana requires ed25519. For a software member, run
+`harbor keys create hrbr-solana-three --type ed25519 --json`, or use
+`harbor keys import hrbr-solana-three --solana` to enter an existing seed or
+keypair JSON array at the hidden prompt. Enroll three Solana public addresses
+on separate devices in Squads v4 and set the threshold to 2. Use the Squad
+Vault address for holding assets and assigning mint or position authority.
+See [Squads setup](https://docs.squads.so/main/getting-started/create-a-squad)
+and [vault addresses](https://docs.squads.so/main/navigating-your-squad/settings).
+
+For a CLI-held member, use a Squads SDK or other transaction builder to prepare
+a base64 legacy or v0 wire transaction with the member as a required signer. Review the
+instructions, accounts, and target cluster in the originating tool. Then run
+`harbor solana sign-transaction unsigned.b64 --key hrbr-solana-three --output
+signed.b64`. Review the stderr summary and confirm in the terminal, or pass
+`--yes` in an automated workflow. The offline summary shows the lifetime
+token and amounts for recognized SOL and SPL token transfers. Lookup-table
+addresses and custom program effects require review in the originating tool.
+Send the signed transaction back to that tool for submission. Harbor CLI
+preserves the other signature slots and signs local files without an RPC
+connection. Ledger members use the Squads wallet flow.
+
+### Backup and rotate
+
+An enclave key stays on the Mac where it was created. Its stored reference
+cannot restore it on another device. Keep the other two signers independent
+so the quorum survives loss of either Mac.
+
+For the software recovery signer, copy the encrypted `<name>.json` entry to
+offline media, store its passphrase separately, and rehearse restoring the
+file under the same alias with mode `0600`. If a paper or metal backup is
+required, provision that recovery seed with a trusted offline process, record
+it there, then import it through the hidden prompt. Harbor CLI does not display
+private keys. Keep any physical backup sealed and separate from the devices.
+
+If a signer is lost, provision a replacement on a separate device. Use the
+surviving quorum to replace the lost member in the treasury permission or
+Squads configuration. Where an independent signer-account owner is available,
+it can rotate that account's active key. Review and cancel or recreate pending
+proposals touched by the loss. Read back membership and repeat the two-approval
+rehearsal before trusting the replacement with assets.
+
+### Test commands
+
+`npm run check`, `npm run build`, and `npm test` cover the CLI and local
+signature handling. The dedicated end-to-end test starts a fresh loopback
+Harbor chain, deploys fixture contracts, and deletes the temporary chain and
+keystore afterward.
+
+```sh
+HARBOR_NODEOS=/path/to/harbor/nodeos \
+HARBOR_CHAIN_SOURCE=/path/to/harbor/source npm run test:msig:e2e
+```
+
 ## Commands
 
 Governed RLVR datasets can be packed with `harbor ai data pack ... --rlvr

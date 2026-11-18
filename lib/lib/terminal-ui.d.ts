@@ -1,4 +1,5 @@
 import { AbstractUserInterface, type Cancelable, type LoginContext, type PromptArgs, type PromptResponse, type UserInterfaceAccountCreationResponse, type UserInterfaceLoginResponse, type UserInterfaceTranslateOptions } from '@wharfkit/session';
+export declare function reviewTransaction(summary: object | string, yes?: boolean): Promise<void>;
 export declare class HarborTerminalUI extends AbstractUserInterface {
     login(context: LoginContext): Promise<UserInterfaceLoginResponse>;
     onError(error: Error): Promise<void>;
