@@ -1,5 +1,5 @@
 {
-  "name": "@dafuga/harbor-cli",
+  "name": "@harbornet/cli",
   "version": "0.1.0",
   "description": "Harbor command line tools for service agents and market operators.",
   "license": "BSD-3-Clause",
