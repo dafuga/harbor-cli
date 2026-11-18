@@ -1,11 +1,12 @@
 import {Checksum256, Name, PermissionLevel, Serializer, Transaction} from '@wharfkit/antelope'
 import {Command} from 'commander'
-import {clientFor, getAbi, getTableRows, parseJson, permissionLevel, printResult, serializeAction} from '../lib/tx.js'
+import {clientFor, getAbi, getTableRows, parseJson, permissionLevel, printResult, serializeAction, summarizeAntelopeTransaction} from '../lib/tx.js'
 import {addTxOptions, pushJsonAction} from './action.js'
+import {reviewTransaction} from '../lib/terminal-ui.js'
 import type {ActionOptions} from './action.js'
 
 type MsigOptions = ActionOptions & {msigContract: string}
-type ProposeOptions = MsigOptions & {requested: string; actionAuth: string; proposalExpiration: string}
+type ProposeOptions = MsigOptions & {requested: string; actionAuth: string; proposalExpiration: string; yes?: boolean}
 
 function msigContract(command: Command): Command {
   return command.option('--msig-contract <account>', 'multisig contract account', process.env.HARBOR_MSIG_CONTRACT ?? 'eosio.msig')
@@ -29,6 +30,7 @@ export function createMsigCommand(): Command {
     .description('Propose a transaction for the requested account permissions')
     .requiredOption('--requested <levels>', 'comma-separated account@permission approvers')
     .requiredOption('--action-auth <levels>', 'comma-separated account@permission levels on the proposed action')
+    .option('--yes', 'sign and submit without an interactive confirmation')
     .option('--proposal-expiration <seconds>', 'how long the proposal remains executable', '86400')
     .action(async (proposal: string, contract: string, action: string, data: string, options: ProposeOptions) => {
       const signer = permissionLevel(options)
@@ -45,7 +47,24 @@ export function createMsigCommand(): Command {
       const trx = Transaction.from({...info.getTransactionHeader(seconds), actions: [proposedAction]})
       await pushJsonAction(options.msigContract, 'propose', {
         proposer: signer.actor, proposal_name: proposal, requested, trx,
-      }, {...options, ...signer})
+      }, {...options, ...signer}, async ({chainId, resolvedTransaction}) => {
+        const summary = summarizeAntelopeTransaction(resolvedTransaction)
+        const outer = summary.actions[0]
+        const packed = Transaction.from(outer.data.trx as Parameters<typeof Transaction.from>[0])
+        const abi = await getAbi(contract, options.url)
+        const actions = packed.actions.map((action) => ({...action, data: action.decodeData(abi)}))
+        await reviewTransaction({
+          chain: String(chainId), ...summary,
+          actions: [{
+            ...outer,
+            data: {
+              proposer: outer.data.proposer, proposal_name: outer.data.proposal_name,
+              requested: (outer.data.requested as PermissionLevel[]).map((level) => String(PermissionLevel.from(level))),
+              transaction: summarizeAntelopeTransaction({...packed, actions}),
+            },
+          }],
+        }, options.yes)
+      })
     })
 
   msigContract(msig.command('show <proposer> <proposal>').option('-u, --url <url>', 'Harbor chain API URL'))

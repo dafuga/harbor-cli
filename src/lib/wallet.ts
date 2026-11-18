@@ -219,9 +219,6 @@ function storedSigner(key: StoredKey): AntelopeSigner {
 
 export async function resolveAntelopeSigner(candidate: string | undefined, actor?: string): Promise<AntelopeSigner> {
   if (candidate && !candidate.startsWith('PUB_')) {
-    if (candidate.startsWith('PVT_') || /^5[1-9A-HJ-NP-Za-km-z]{50}$/.test(candidate)) {
-      return legacySigner(parseAntelopePrivateKey(candidate))
-    }
     const key = await readStoredKey(candidate)
     if (key) return storedSigner(key)
   }

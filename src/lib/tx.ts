@@ -1,6 +1,7 @@
 import {ABI, APIClient, Action, FetchProvider, SignedTransaction} from '@wharfkit/antelope'
+import type {ResolvedAction, ResolvedTransaction} from '@wharfkit/signing-request'
 import {Session} from '@wharfkit/session'
-import {walletPluginFor} from './private-key-wallet.js'
+import {walletPluginFor, type TransactionReview} from './private-key-wallet.js'
 import {HarborTerminalUI} from './terminal-ui.js'
 
 export interface AuthOptions {
@@ -118,8 +119,19 @@ export async function serializeAction(input: PushActionInput): Promise<Action> {
   )
 }
 
-export async function transactActions(options: AuthOptions, actions: Action[] | Array<Record<string, unknown>>) {
-  const {result} = await signAndTransact(options, actions, true)
+export function summarizeAntelopeTransaction<Data>({expiration, actions}: Pick<ResolvedTransaction, 'expiration'> & {
+  actions: Array<Omit<ResolvedAction, 'data'> & {data: Data}>
+}) {
+  return {
+    expiry_utc: String(expiration),
+    actions: actions.map(({account, name, authorization, data}) => ({
+      action: `${account}::${name}`, authorization: authorization.map(String), data,
+    })),
+  }
+}
+
+export async function transactActions(options: AuthOptions, actions: Action[] | Array<Record<string, unknown>>, review?: TransactionReview) {
+  const {result} = await signAndTransact(options, actions, true, review)
   const response = result.response as {transaction_id?: string; processed?: {receipt?: {status?: string}}} | undefined
   return {
     transaction_id: response?.transaction_id ?? result.resolved?.transaction.id?.toString(),
@@ -128,12 +140,12 @@ export async function transactActions(options: AuthOptions, actions: Action[] | 
   }
 }
 
-async function signAndTransact(options: AuthOptions, actions: Action[] | Array<Record<string, unknown>>, broadcast: boolean) {
+async function signAndTransact(options: AuthOptions, actions: Action[] | Array<Record<string, unknown>>, broadcast: boolean, review?: TransactionReview) {
   const url = apiUrl(options.url)
   const client = clientFor(url)
   const info = await client.v1.chain.get_info()
   const auth = permissionLevel(options)
-  const walletPlugin = await walletPluginFor(options.key, auth.actor, url)
+  const walletPlugin = await walletPluginFor(options.key, auth.actor, url, review)
   const session = new Session({
     chain: {id: info.chain_id, url},
     actor: auth.actor,
@@ -149,17 +161,17 @@ async function signAndTransact(options: AuthOptions, actions: Action[] | Array<R
   return {result, chainId: info.chain_id}
 }
 
-export async function signAction(input: PushActionInput) {
+export async function signAction(input: PushActionInput, review?: TransactionReview) {
   const action = await serializeAction(input)
-  const {chainId, result} = await signAndTransact(input, [action], false)
+  const {chainId, result} = await signAndTransact(input, [action], false, review)
   if (!result.resolved) throw new Error('unable to resolve the action transaction')
   const transaction = SignedTransaction.from({...result.resolved.transaction, signatures: result.signatures})
   return {chain_id: chainId, transaction}
 }
 
-export async function pushAction(input: PushActionInput) {
+export async function pushAction(input: PushActionInput, review?: TransactionReview) {
   const action = await serializeAction(input)
-  return transactActions(input, [action])
+  return transactActions(input, [action], review)
 }
 
 export async function getTableRows<T = unknown>(

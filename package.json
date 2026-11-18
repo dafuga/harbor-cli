@@ -8,6 +8,11 @@
   "bin": {
     "harbor": "lib/index.js"
   },
+  "files": [
+    "lib",
+    "src/lib/secure-enclave.swift",
+    "NOTICE"
+  ],
   "scripts": {
     "build": "tsc",
     "check": "tsc --noEmit",
@@ -18,7 +23,7 @@
     "node": ">=20.18.0"
   },
   "dependencies": {
-    "@harbor/opportunities": "git+https://github.com/dafuga/harbor-opportunities.git",
+    "@harbor/opportunities": "github:dafuga/harbor-opportunities#5be04aa07febcefb777d7d0c7c492553833d0b4c",
     "@solana/transaction-messages": "6.4.0",
     "@solana/transactions": "6.4.0",
     "@types/qrcode-terminal": "^0.12.2",

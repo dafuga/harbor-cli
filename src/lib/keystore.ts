@@ -21,8 +21,12 @@ export type StoredKey = EncryptedKey | EnclaveKey
 const MAX_RECORD_BYTES = 8192
 const SCRYPT = {N: 1 << 17, r: 8, p: 1, maxmem: 160 * 1024 * 1024}
 
+export function isRawAntelopeKey(value: string): boolean {
+  return value.startsWith('PVT_') || /^(?:5[1-9A-HJ-NP-Za-km-z]{50}|[KL][1-9A-HJ-NP-Za-km-z]{51})$/.test(value)
+}
+
 export function keyName(name: string): string {
-  if (!/^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,63}$/.test(name) || name.startsWith('PVT_') || /^5[1-9A-HJ-NP-Za-km-z]{50}$/.test(name)) {
+  if (!/^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,63}$/.test(name) || isRawAntelopeKey(name)) {
     throw new Error('key name must contain 1–64 letters, digits, dots, dashes or underscores and start with a letter or digit')
   }
   return name
@@ -138,6 +142,7 @@ async function readRecord(dir: string, name: string): Promise<StoredKey> {
     if (!stat.isFile() || stat.uid !== process.getuid?.() || (stat.mode & 0o777) !== 0o600 || stat.size > MAX_RECORD_BYTES) {
       throw new Error('Harbor key entries must be owner-only regular files with mode 0600')
     }
+    if (stat.nlink !== 1) throw new Error('Harbor key entries must have a single link')
     const bytes = Buffer.alloc(MAX_RECORD_BYTES + 1)
     const {bytesRead} = await file.read(bytes)
     if (bytesRead > MAX_RECORD_BYTES) throw new Error('Harbor keystore entry is too large')

@@ -26,7 +26,10 @@ store on machines without an enclave. K1 and Solana ed25519 always use the
 encrypted store. Linux can explicitly select `--storage encrypted` for R1.
 
 `harbor keys list --json` prints only names, public keys, and storage types.
-Use `--key <name>` for signing. New software keys are stored under
+Use `--key <name>` for signing. Raw private keys supplied through `--key`,
+`HARBOR_PRIVATE_KEY`, or `WHARFKIT_DEPLOY_KEY` are rejected. Import keys using
+the hidden prompt or create a Secure Enclave key, then select it by name.
+New software keys are stored under
 `${HARBOR_HOME:-~/.harbor}/keys/` in mode `0600`, encrypted with scrypt
 (`N=131072, r=8, p=1`) and AES-256-GCM. Use a strong, unique passphrase per
 key. The terminal prompts without echo and confirms new passphrases. The
@@ -73,9 +76,13 @@ harbor msig exec signerone rehearsal --actor signerone --key hrbr-one
 ```
 
 Run the second approval on the second signer's device against the same trusted
-test endpoint. `harbor action sign` creates an ABI-packed transaction without
-broadcasting. `harbor sign transaction <file> --chain-id <id> --key <name>`
-can add another local signature without an RPC connection. `harbor action
+test endpoint. `harbor msig propose` and `harbor action sign` show decoded
+actions, accounts, amounts where applicable, and expiration on stderr.
+Review the transaction and confirm at the terminal. Pass `--yes` for
+noninteractive signing. `harbor action sign` creates an ABI-packed
+transaction without broadcasting. Use
+`harbor sign transaction <file> --chain-id <id> --key <name>` to add another
+local signature without an RPC connection. `harbor action
 push` and `harbor contract deploy` use the same signer selection.
 
 ### Set up Solana Squads signers
@@ -94,9 +101,13 @@ For a CLI-held member, use a Squads SDK or other transaction builder to prepare
 a base64 legacy or v0 wire transaction with the member as a required signer. Review the
 instructions, accounts, and target cluster in the originating tool. Then run
 `harbor solana sign-transaction unsigned.b64 --key hrbr-solana-three --output
-signed.b64`. Send the signed transaction back to the originating tool for
-submission. Harbor CLI preserves the other signature slots and signs local
-files without an RPC connection. Ledger members use the Squads wallet flow.
+signed.b64`. Review the stderr summary and confirm in the terminal, or pass
+`--yes` in an automated workflow. The offline summary shows the lifetime
+token and amounts for recognized SOL and SPL token transfers. Lookup-table
+addresses and custom program effects require review in the originating tool.
+Send the signed transaction back to that tool for submission. Harbor CLI
+preserves the other signature slots and signs local files without an RPC
+connection. Ledger members use the Squads wallet flow.
 
 ### Backup and rotate
 

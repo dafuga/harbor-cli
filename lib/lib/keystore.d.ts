@@ -18,6 +18,7 @@ type EnclaveKey = KeyMetadata & {
     wrapped: string;
 };
 export type StoredKey = EncryptedKey | EnclaveKey;
+export declare function isRawAntelopeKey(value: string): boolean;
 export declare function keyName(name: string): string;
 export declare function encryptKey(metadata: KeyMetadata, secret: Buffer, password: Buffer): Promise<EncryptedKey>;
 export declare function decryptKey(record: EncryptedKey, password: Buffer): Promise<Buffer>;
