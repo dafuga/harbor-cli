@@ -6,7 +6,7 @@ import {
   HarborServiceType,
   bestOpportunity,
   buildOpportunities,
-} from '@harbor/opportunities/market'
+} from '../lib/opportunities.js'
 import {collectJsonActionSpecs, fieldName, fieldType} from './action-fields.js'
 import {addMarketActionCommands} from './market-actions.js'
 import {

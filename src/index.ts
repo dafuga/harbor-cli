@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import {basename} from 'node:path'
 import {Command} from 'commander'
 import {createAccountCommand} from './commands/account.js'
 import {createActionCommand} from './commands/action.js'
@@ -32,7 +33,7 @@ import {createVaultCommand} from './commands/vault.js'
 const program = new Command()
 
 program
-  .name('harbor')
+  .name(basename(process.argv[1] ?? '') === 'harbor-cli' ? 'harbor-cli' : 'harbor')
   .description('Harbor service-agent and market command line tools')
   .version('0.1.0')
   .enablePositionalOptions()

@@ -3,9 +3,48 @@
 Harbor CLI helps Mac Mini agents discover Harbor service-market opportunities,
 run local service checks, and interact with the Harbor service market contract.
 
+## Install
+
+Use Node.js 20.18 or later. Both `harbor-cli` and `harbor` run the same CLI.
+
+**After a public npm release**, install with:
+
+```sh
+npm install -g @dafuga/harbor-cli
+```
+
+Once the repository and release assets are public, you can also use the shell
+installer. It checks Node.js and installs the npm package by default:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/dafuga/harbor-cli/main/install.sh | sh
+```
+
+For a GitHub release asset produced with `npm pack`, pass its `.tgz` URL to
+`sh -s -- --tarball <url>` in the same pipeline. Use the uploaded npm package
+asset. GitHub's automatically generated source archive is for source checkouts.
+Pass `--prefix "$HOME/.local"` to the installer if you need a writable prefix,
+and include `$HOME/.local/bin` on your `PATH`.
+
+To install from GitHub or an npm package tarball:
+
+```sh
+npm install -g github:dafuga/harbor-cli
+npm install -g ./dafuga-harbor-cli-0.1.0.tgz
+```
+
+Run `npm ci` and `npm run pack:release` in the source checkout to build and
+pack a release tarball. GitHub installs use the compiled `lib/` checked into
+the repository, so npm can install globally without invoking a source build.
+
+```sh
+harbor-cli --help
+harbor-cli keys list
+```
+
 ## HRBR multisig signing keys
 
-Build with Node.js 20.18 or later using `npm ci && npm run build`. Run
+Build with Node.js 20.18 or later using `npm ci && npm run compile`. Run
 `node lib/index.js` from the checkout, or use the installed `harbor` binary.
 Give each device a distinct key name and use a separate `HARBOR_HOME` for
 rehearsal keys. The examples below target a loopback test chain.
@@ -144,7 +183,7 @@ rehearsal before trusting the replacement with assets.
 
 ### Test commands
 
-`npm run check`, `npm run build`, and `npm test` cover the CLI and local
+`npm run check`, `npm run compile`, and `npm test` cover the CLI and local
 signature handling. The dedicated end-to-end test starts a fresh loopback
 Harbor chain, deploys fixture contracts, and deletes the temporary chain and
 keystore afterward.
@@ -339,11 +378,8 @@ for themselves with `harbor market opportunities unable`; later
 `--agent <account>` planning reads those on-chain markers and skips blocked
 opportunities such as domain-backed router or site-gateway work.
 
-The opportunity planner is implemented by the private
-`dafuga/harbor-opportunities` package. `harbor-cli` keeps the user-facing
-`harbor market opportunities` command so humans, scripts, and runtimes share one
-command surface, but the market scoring and service-boundary guidance live in
-`harbor-opportunities`.
+The CLI includes the Harbor Opportunities market planner. Its source version
+and license are recorded in `NOTICE`.
 
 The agent commands create a local `~/.harbor/config.json`, check local service
 ports, and generate launchd plists. `harbor storage put` streams public files
@@ -915,6 +951,6 @@ contract.
 
 ```sh
 npm install
-npm run build
+npm run compile
 node lib/index.js --help
 ```
