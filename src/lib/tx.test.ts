@@ -289,3 +289,15 @@ test('msig propose reviews the proposal and outer expiry before it can broadcast
   assert.equal(JSON.parse(accepted.stdout).status, 'executed')
   assert.deepEqual(requests, ['/v1/chain/send_transaction'])
 })
+
+test('action push pins the signing chain before opening the wallet', async (t) => {
+  const {env, requests} = await signingFixture(t)
+  const args = ['action', 'push', 'eosio.token', 'transfer', JSON.stringify(transferData)]
+  const wrong = await runCli([...args, '--expect-chain-id', 'cd'.repeat(32), '--key', 'missing'], env)
+  assert.equal(wrong.code, 1)
+  assert.match(wrong.stderr, /does not match the expected chain ID/)
+  assert.deepEqual(requests, [])
+  const right = await runCli([...args, '--expect-chain-id', chainId, '--key', 'fixture'], env)
+  assert.equal(right.code, 0, right.stderr)
+  assert.deepEqual(requests, ['/v1/chain/send_transaction'])
+})
