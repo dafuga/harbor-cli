@@ -11,6 +11,7 @@ export declare function walletPath(): string;
 export declare function listWalletKeys(): Promise<PublicWalletKey[]>;
 export declare function createWalletKey(name: string, type: StoredKeyType, storage?: StoredKey['storage']): Promise<PublicWalletKey>;
 export declare function importWalletKey(name: string, input: Buffer, solana: boolean): Promise<PublicWalletKey>;
+export declare function changeWalletKeyPassword(name: string): Promise<void>;
 export declare function signSolanaMessage(seed: Buffer, message: Buffer): Buffer;
 export declare function openSolanaSigner(name: string): Promise<{
     publicKey: string;

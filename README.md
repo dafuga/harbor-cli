@@ -37,6 +37,13 @@ key. The terminal prompts without echo and confirms new passphrases. The
 (`3` or greater) carrying one passphrase for a single encrypted key and one
 invocation. Pass the descriptor number only.
 
+Run `harbor keys passwd <name>` to change an encrypted key's passphrase.
+Enter the current passphrase, then enter a different passphrase twice. For
+automation, use `HARBOR_KEY_PASSWORD_FD` to name an inherited descriptor
+with the current passphrase, new passphrase, and confirmation on separate
+lines in that order. The command keeps the same public key and multisig
+membership. Secure Enclave keys have no keystore passphrase.
+
 To import a recovery key, run `harbor keys import hrbr-three` and enter it at
 the hidden prompt. Existing plaintext `wallet.json` files remain readable for
 legacy callers. Rehearse rotation to newly provisioned secure keys before
@@ -121,6 +128,12 @@ file under the same alias with mode `0600`. If a paper or metal backup is
 required, provision that recovery seed with a trusted offline process, record
 it there, then import it through the hidden prompt. Harbor CLI does not display
 private keys. Keep any physical backup sealed and separate from the devices.
+
+After changing a passphrase with `harbor keys passwd <name>`, refresh your
+offline backup and rehearse recovery with the new passphrase. Older encrypted
+copies still unlock with the passphrase they were backed up with.
+If an interruption leaves an empty `.passwd-<name>` lock directory under
+`keys/`, remove it only after confirming no rotation is running for that key.
 
 If a signer is lost, provision a replacement on a separate device. Use the
 surviving quorum to replace the lost member in the treasury permission or

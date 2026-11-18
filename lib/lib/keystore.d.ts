@@ -1,3 +1,4 @@
+import { type Stats } from 'node:fs';
 export type KeyType = 'K1' | 'R1' | 'ed25519';
 export type KeyMetadata = {
     name: string;
@@ -18,11 +19,18 @@ type EnclaveKey = KeyMetadata & {
     wrapped: string;
 };
 export type StoredKey = EncryptedKey | EnclaveKey;
+type KeyEntry = {
+    filename: string;
+    record: StoredKey;
+    stat: Stats;
+};
 export declare function isRawAntelopeKey(value: string): boolean;
 export declare function keyName(name: string): string;
 export declare function encryptKey(metadata: KeyMetadata, secret: Buffer, password: Buffer): Promise<EncryptedKey>;
 export declare function decryptKey(record: EncryptedKey, password: Buffer): Promise<Buffer>;
+export declare function readKeyEntry(name: string): Promise<KeyEntry | undefined>;
 export declare function readStoredKey(name: string): Promise<StoredKey | undefined>;
 export declare function listStoredKeys(): Promise<StoredKey[]>;
 export declare function storeKey(record: StoredKey): Promise<void>;
+export declare function replaceEncryptedKey(entry: KeyEntry, replacement: EncryptedKey, verify: (record: EncryptedKey) => Promise<void>): Promise<void>;
 export {};

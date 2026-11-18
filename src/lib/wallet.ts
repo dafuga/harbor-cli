@@ -1,4 +1,4 @@
-import {randomBytes} from 'node:crypto'
+import {randomBytes, timingSafeEqual} from 'node:crypto'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import {Base58, Bytes, KeyType, PrivateKey, PublicKey, Signature} from '@wharfkit/antelope'
@@ -6,8 +6,8 @@ import sodium from 'sodium-native'
 import {antelopePublicKey, generateAntelopeSecret, signAntelopeMessage} from './antelope-key.js'
 import {harborHome} from './config.js'
 import {createEnclaveKey, enclaveAvailable, signWithEnclave} from './enclave.js'
-import {readKeyPassword} from './key-prompt.js'
-import {decryptKey, encryptKey, keyName, listStoredKeys, readStoredKey, storeKey} from './keystore.js'
+import {readKeyPassword, readRotationPassword} from './key-prompt.js'
+import {decryptKey, encryptKey, keyName, listStoredKeys, readKeyEntry, readStoredKey, replaceEncryptedKey, storeKey} from './keystore.js'
 import type {KeyMetadata, KeyType as StoredKeyType, StoredKey} from './keystore.js'
 
 type LegacyKey = {name: string; privateKey: string; publicKey: string}
@@ -150,15 +150,55 @@ export async function importWalletKey(name: string, input: Buffer, solana: boole
   }
 }
 
+async function decryptVerifiedKey(
+  record: Extract<StoredKey, {storage: 'encrypted'}>, password: Buffer,
+): Promise<Buffer> {
+  const secret = await decryptKey(record, password)
+  try {
+    if (publicKeyFor(record.type, secret) === record.publicKey) return secret
+  } catch {
+    // Treat an invalid scalar like any other key that cannot match the stored public key.
+  }
+  secret.fill(0)
+  throw new Error('keystore entry does not match its public key')
+}
+
 async function unlockKey(record: Extract<StoredKey, {storage: 'encrypted'}>): Promise<Buffer> {
   const password = await readKeyPassword(record.name)
   try {
-    const secret = await decryptKey(record, password)
-    if (publicKeyFor(record.type, secret) === record.publicKey) return secret
-    secret.fill(0)
-    throw new Error('keystore entry does not match its public key')
+    return await decryptVerifiedKey(record, password)
   } finally {
     password.fill(0)
+  }
+}
+
+export async function changeWalletKeyPassword(name: string): Promise<void> {
+  const entry = await readKeyEntry(name)
+  if (!entry) throw new Error('named keystore entry not found')
+  const {record} = entry
+  if (record.storage === 'enclave') throw new Error('Secure Enclave keys have no password to change')
+
+  const current = await readRotationPassword(name, 'current')
+  let secret: Buffer | undefined
+  let password: Buffer | undefined
+  try {
+    secret = await decryptVerifiedKey(record, current)
+    const next = await readRotationPassword(name, 'new')
+    password = next
+    if (current.length === next.length && timingSafeEqual(current, next)) {
+      throw new Error('new password must differ from the current password')
+    }
+    current.fill(0)
+    const replacement = await encryptKey({name, type: record.type, publicKey: record.publicKey}, secret, next)
+    secret.fill(0)
+    await replaceEncryptedKey(entry, replacement, async (staged) => {
+      const verified = await decryptVerifiedKey(staged, next)
+      verified.fill(0)
+    })
+  } finally {
+    current.fill(0)
+    secret?.fill(0)
+    password?.fill(0)
   }
 }
 

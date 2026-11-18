@@ -56,14 +56,15 @@ function readHidden(prompt: string): Promise<Buffer> {
   })
 }
 
-function readPasswordFD(fd: number): Buffer {
+function readPasswordFD(fd: number, line = false): Buffer {
   const bytes = Buffer.alloc(MAX_INPUT_BYTES + 2)
   let length = 0
   try {
     while (length < bytes.length) {
-      const count = readSync(fd, bytes, length, bytes.length - length, null)
+      const count = readSync(fd, bytes, length, line ? 1 : bytes.length - length, null)
       if (count === 0) break
       length += count
+      if (line && bytes[length - 1] === 10) break
     }
     if (length && bytes[length - 1] === 10) length--
     if (length && bytes[length - 1] === 13) length--
@@ -77,18 +78,20 @@ function readPasswordFD(fd: number): Buffer {
   }
 }
 
-export async function readKeyPassword(name: string, confirm = false): Promise<Buffer> {
+function passwordDescriptor(): number | undefined {
   const descriptor = process.env.HARBOR_KEY_PASSWORD_FD
-  if (descriptor !== undefined && !/^([3-9]|[1-9][0-9]{1,5})$/.test(descriptor)) {
+  if (descriptor === undefined) return
+  if (!/^([3-9]|[1-9][0-9]{1,5})$/.test(descriptor)) {
     throw new Error('HARBOR_KEY_PASSWORD_FD must name an inherited descriptor of 3 or higher')
   }
-  const password = descriptor === undefined
-    ? await readHidden(`Password for ${name}: `)
-    : readPasswordFD(Number(descriptor))
+  return Number(descriptor)
+}
+
+async function validatePassword(password: Buffer, confirm?: () => Promise<Buffer>): Promise<Buffer> {
   try {
     if (!password.length) throw new Error('key password cannot be empty')
-    if (confirm && descriptor === undefined) {
-      const repeated = await readHidden('Confirm password: ')
+    if (confirm) {
+      const repeated = await confirm()
       try {
         if (password.length !== repeated.length || !timingSafeEqual(password, repeated)) {
           throw new Error('passwords do not match')
@@ -102,6 +105,24 @@ export async function readKeyPassword(name: string, confirm = false): Promise<Bu
     password.fill(0)
     throw error
   }
+}
+
+export async function readKeyPassword(name: string, confirm = false): Promise<Buffer> {
+  const descriptor = passwordDescriptor()
+  if (descriptor !== undefined) return validatePassword(readPasswordFD(descriptor))
+  return validatePassword(
+    await readHidden(`Password for ${name}: `),
+    confirm ? () => readHidden('Confirm password: ') : undefined,
+  )
+}
+
+export async function readRotationPassword(name: string, stage: 'current' | 'new'): Promise<Buffer> {
+  const descriptor = passwordDescriptor()
+  async function read(prompt: string): Promise<Buffer> {
+    return descriptor === undefined ? readHidden(prompt) : readPasswordFD(descriptor, true)
+  }
+  if (stage === 'current') return validatePassword(await read(`Current password for ${name}: `))
+  return validatePassword(await read(`New password for ${name}: `), () => read('Confirm new password: '))
 }
 
 export function readPrivateKeyInput(): Promise<Buffer> {
