@@ -1,5 +1,6 @@
 import { ABI, APIClient, Action, SignedTransaction } from '@wharfkit/antelope';
 import type { ResolvedAction, ResolvedTransaction } from '@wharfkit/signing-request';
+import type { AbstractWalletPlugin } from '@wharfkit/session';
 import { type TransactionReview } from './private-key-wallet.js';
 export interface AuthOptions {
     url?: string;
@@ -46,7 +47,7 @@ export declare function summarizeAntelopeTransaction<Data>({ expiration, actions
         data: Data;
     }[];
 };
-export declare function transactActions(options: AuthOptions, actions: Action[] | Array<Record<string, unknown>>, review?: TransactionReview): Promise<{
+export declare function transactActions(options: AuthOptions, actions: Action[] | Array<Record<string, unknown>>, review?: TransactionReview, wallet?: AbstractWalletPlugin): Promise<{
     transaction_id: string | undefined;
     status: string | undefined;
     response: {
@@ -62,7 +63,7 @@ export declare function signAction(input: PushActionInput, review?: TransactionR
     chain_id: import("@wharfkit/antelope").Checksum256;
     transaction: SignedTransaction;
 }>;
-export declare function pushAction(input: PushActionInput, review?: TransactionReview): Promise<{
+export declare function pushAction(input: PushActionInput, review?: TransactionReview, wallet?: AbstractWalletPlugin): Promise<{
     transaction_id: string | undefined;
     status: string | undefined;
     response: {
