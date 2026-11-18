@@ -8,6 +8,7 @@ export interface AuthOptions {
     key?: string;
     json?: boolean;
     expiration?: string;
+    expectChainId?: string;
 }
 export interface PushActionInput extends AuthOptions {
     contract: string;

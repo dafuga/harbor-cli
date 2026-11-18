@@ -8,6 +8,7 @@ export interface ActionOptions {
     auth?: string;
     json?: boolean;
     expiration?: string;
+    expectChainId?: string;
 }
 export declare function addTxOptions<T extends Command>(command: T): T;
 export declare function pushJsonAction(contract: string, action: string, data: unknown, options: ActionOptions, review?: TransactionReview): Promise<void>;
