@@ -11,10 +11,15 @@ import type {Network} from './types.js'
 
 test('worker and trigger credentials are isolated, with no token in URLs or state', async () => {
   const temp = await mkdtemp(path.join(os.tmpdir(), 'harbor-worker-http-'))
+  const quotedPrompts: string[] = []
   const network: Network = {
     identity: 'test/agenttest', models: [{id: 'flagship', label: 'Qwen3 8B 4-bit'}], currency: {symbol: 'TEST', precision: 4},
-    async quote() { return {maxCost: 10, deployment: '1'} },
-    async execute() { throw new Error('Fixture has no network') },
+    async quote(_agent, prompt) { quotedPrompts.push(prompt); return {maxCost: 10, deployment: '1'} },
+    async execute({starting, submitted}) {
+      starting()
+      submitted('1')
+      return {text: 'Fixture response', calls: [], paid: 5}
+    },
     async reconcile() { return null },
     async verify() { throw new Error('Unexpected verifier') },
     async readFile() { throw new Error('Unexpected file read') },
@@ -55,6 +60,42 @@ test('worker and trigger credentials are isolated, with no token in URLs or stat
     const quote = await post(`/agents/${agent.id}/quote`, {message: 'Draft an update'}).then(response => response.json())
     assert.equal(quote.maxCost, 10)
     assert.equal((await post(`/confirm/${quote.id}`, {})).status, 202)
+    const catalog = await get('/state').then(response => response.json())
+    assert.deepEqual(catalog.specialties?.map((item: {id: string}) => item.id),
+      ['researcher', 'chief-of-staff', 'coder', 'harness-coder'])
+    const input = {name: 'Build reviewer', specialty: 'harness-coder', perRun: 10, total: 100, files: [], secrets: []}
+    assert.equal((await post('/agents', {...input, specialty: 'unknown'})).status, 400)
+    assert.equal((await post('/agents', {...input, secrets: ['wallet-key']})).status, 403)
+    const specialtyAgent = await post('/agents', input).then(response => response.json())
+    assert.equal(specialtyAgent.specialty, 'harness-coder')
+    assert.equal(specialtyAgent.specialtyVersion, 1)
+    assert.equal(specialtyAgent.model, 'flagship')
+    const snapshot = await get(`/state/${specialtyAgent.id}`).then(response => response.json())
+    assert.equal(snapshot.routines.length, 1)
+    assert.equal(snapshot.routines[0].enabled, false)
+    assert.equal(snapshot.routines[0].nextAt, null)
+    assert.equal((await post(`/agents/${specialtyAgent.id}`, {...input, specialty: 'researcher'})).status, 409)
+    const specialtyQuote = await post(`/agents/${specialtyAgent.id}/quote`, {message: 'Verify the requested behavior.'})
+      .then(response => response.json())
+    assert.match(JSON.parse(quotedPrompts.at(-1)!).specialtyInstructions, /Harness/)
+    const specialtyRun = await post(`/confirm/${specialtyQuote.id}`, {}).then(response => response.json())
+    const feedbackPath = `/runs/${specialtyRun.id}/feedback`
+    const vote = {kind: 'answer', rating: 'up', policy: 'harbor.agent-feedback.v1', correction: 'Check the contract.'}
+    assert.equal(specialtyRun.specialty, 'harness-coder')
+    assert.equal((await post(feedbackPath, vote, request.token)).status, 401)
+    assert.equal((await post(feedbackPath, vote)).status, 409)
+    for (let i = 0; i < 3; i++) await worker.tick()
+    assert.equal((await post(feedbackPath, {...vote, policy: undefined})).status, 400)
+    assert.equal((await post(feedbackPath, vote)).status, 200)
+    assert.equal((await post(feedbackPath, {...vote, rating: 'down'})).status, 200)
+    assert.equal((await post(feedbackPath, {...vote, kind: 'task'})).status, 200)
+    const feedback = await get(`/state/${specialtyAgent.id}`).then(response => response.json())
+    assert.deepEqual(feedback.feedback.map((item: {kind: string; rating: string}) => [item.kind, item.rating]),
+      [['answer', 'down'], ['task', 'up']])
+    assert.equal((await post(feedbackPath, {kind: 'answer', rating: null})).status, 200)
+    const updated = await get(`/state/${specialtyAgent.id}`).then(response => response.json())
+    assert.deepEqual(updated.feedback.map((item: {kind: string}) => item.kind), ['task'])
+
   } finally {
     await new Promise<void>(resolve => server.close(() => resolve()))
     worker.close()
