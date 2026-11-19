@@ -65,6 +65,20 @@ test('buildRunPlan dry-run does not require an installed binary', {skip: process
   await assert.rejects(fs.access(config), {code: 'ENOENT'})
 })
 
+test('sealed runtime planning requires a configured guest only for a live run', {skip: process.platform === 'win32'}, async (t) => {
+  const home = await tempHome()
+  t.after(() => fs.rm(home, {recursive: true, force: true}))
+  const config = path.join(home, 'sealed.toml')
+  const service = normalizeServiceName('sealedcompute')
+  const plan = await buildRunPlan(service, {config, dryRun: true})
+  assert.deepEqual(plan.command, [plan.binary, '--config', config])
+  const required = process.platform === 'linux' && process.arch === 'x64'
+    ? /requires an existing provider config/
+    : /requires a Linux x64 SEV-SNP or TDX guest/
+  await assert.rejects(buildRunPlan(service, {config, source: 'url'}), required)
+  await assert.rejects(fs.access(config), {code: 'ENOENT'})
+})
+
 test('run plan reads existing runtime ports and protects the config from option conflicts', {skip: process.platform === 'win32'}, async () => {
   const home = await tempHome()
   const config = path.join(home, 'runtime.toml')

@@ -10,8 +10,14 @@ owns the incremental service module boundary and its checks.
 | Market supervision | Run a single healthy selected process. Cover readiness, orderly switch, market failure, failed provider cooldown and shutdown. |
 | Relay receipt | Bind the recipient signature to the canonical chain, delivery and price fields. Cover tampering, key mismatch and expiry. |
 | Relay payment | Submit the matching record and transfer as one reviewed WharfKit transaction. Cover chain/payer mismatch and exact payment bindings. |
+| Sealed guest preflight | Require a provider config and a Linux x64 confidential guest interface before resolving the provider artifact. Cover both guest interfaces and reject unsupported hosts. The provider validates its own config and evidence. |
 
 Use the existing CLI integration tests to verify the public entry points. Run the
 same module checks on the checked-in Node build and verify the contract locally
 with CDT and against Harbor testnet. The release package continues to use its
 existing executable and compiled JavaScript.
+
+The run-plan tests previously exercised artifact-free dry runs for the router only.
+Extend that coverage to sealed compute and check that a live plan rejects an
+unconfigured runtime before resolving an artifact. A hypervisor capability check
+belongs to market host eligibility. The sealed provider runs inside the guest.
