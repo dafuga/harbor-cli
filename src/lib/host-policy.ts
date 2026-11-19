@@ -1,5 +1,5 @@
 import {execFile} from 'node:child_process'
-import {constants} from 'node:fs'
+import {constants, readFileSync} from 'node:fs'
 import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
@@ -15,6 +15,21 @@ async function read(file: string): Promise<string> {
 
 async function command(file: string, args: string[]): Promise<string> {
   return exec(file, args, {timeout: 2000, maxBuffer: 1024 * 1024}).then(({stdout}) => stdout).catch(() => '')
+}
+
+export function hostCpuCores(): number {
+  const logicalCores = os.availableParallelism()
+  if (process.platform !== 'linux') return logicalCores
+  try {
+    const [quota, period] = readFileSync('/sys/fs/cgroup/cpu.max', 'utf8').trim().split(/\s+/).map(Number)
+    return quota > 0 && period > 0 ? Math.min(logicalCores, quota / period) : logicalCores
+  } catch {
+    return logicalCores
+  }
+}
+
+export function hostMemoryBytes(): number {
+  return Math.min(os.totalmem(), process.constrainedMemory() || Infinity)
 }
 
 export interface HostState {
@@ -61,12 +76,14 @@ export async function hostState(): Promise<HostState> {
       : '',
   ])
   const available = memory.match(/^MemAvailable:\s+(\d+)\s+kB/m)?.[1]
+  const hostAvailable = available ? Number(available) * 1024 : os.freemem()
+  const constrainedAvailable = process.constrainedMemory() ? process.availableMemory() : Infinity
   return {
     on_battery: ['Online', 'Offline'].includes(windowsPower.trim()) ? windowsPower.trim() === 'Offline'
       : battery.some(Boolean) ? battery.some((value) => value === 'Discharging') : null,
     active: idle.trim() === 'yes' ? false : idle.trim() === 'no' ? true : null,
     hot: temperatures.some(Boolean) ? temperatures.some((value) => Number(value) >= 85_000) : null,
-    available_memory_bytes: available ? Number(available) * 1024 : os.freemem(),
+    available_memory_bytes: Math.min(hostAvailable, constrainedAvailable, hostMemoryBytes()),
   }
 }
 
@@ -166,7 +183,7 @@ export async function serviceHost(directory: string, options: ServiceHostOptions
     const numbers = [profile.cpuCores, profile.memoryBytes, profile.availableMemoryBytes,
       profile.gpuBytes, profile.freeDiskBytes, profile.bandwidthMbps]
     if (numbers.some((value) => !Number.isFinite(value) || value < 0) ||
-        profile.cpuCores < 1 || profile.memoryBytes < 1 || profile.availableMemoryBytes > profile.memoryBytes ||
+        profile.cpuCores <= 0 || profile.memoryBytes < 1 || profile.availableMemoryBytes > profile.memoryBytes ||
         !['apple-unified', 'nvidia', 'none'].includes(profile.gpuKind) ||
         typeof profile.alwaysOn !== 'boolean' ||
         ![null, 'sev-snp', 'tdx'].includes(profile.confidentialVm)) {
@@ -181,8 +198,8 @@ export async function serviceHost(directory: string, options: ServiceHostOptions
   }
   const [state, gpu, disk, vm] = await Promise.all([hostState(), gpuCapacity(), freeDiskBytes(directory), confidentialVm()])
   return {
-    cpuCores: os.availableParallelism(),
-    memoryBytes: os.totalmem(),
+    cpuCores: hostCpuCores(),
+    memoryBytes: hostMemoryBytes(),
     availableMemoryBytes: state.available_memory_bytes,
     gpuKind: gpu.kind === 'apple-unified' || gpu.kind === 'nvidia' ? gpu.kind : 'none',
     gpuBytes: gpu.bytes ?? 0,

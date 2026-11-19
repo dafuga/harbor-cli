@@ -1,3 +1,5 @@
+export declare function hostCpuCores(): number;
+export declare function hostMemoryBytes(): number;
 export interface HostState {
     on_battery: boolean | null;
     active: boolean | null;

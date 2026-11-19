@@ -1,11 +1,10 @@
-import os from 'node:os'
 import {createHash} from 'node:crypto'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import {executableExists} from './artifacts.js'
 import {harborHome} from './config.js'
 import {verifyQwenGguf} from './gguf.js'
-import {gpuCapacity} from './host-policy.js'
+import {gpuCapacity, hostMemoryBytes} from './host-policy.js'
 import {ResourceLimits} from './resource-limits.js'
 
 const GiB = 1024 ** 3
@@ -21,7 +20,7 @@ const QWEN3_8B = {
 export const LOCAL_BACKEND_ENDPOINT = 'http://127.0.0.1:11434/v1/chat/completions'
 export const LOCAL_BACKEND_KEY_ENV = 'HARBOR_LOCAL_INFERENCE_TOKEN'
 
-export function localModel(profile = 'auto', totalMemory = os.totalmem(), memoryBudget = totalMemory * 0.4) {
+export function localModel(profile = 'auto', totalMemory = hostMemoryBytes(), memoryBudget = totalMemory * 0.4) {
   if (profile !== 'auto' && profile !== 'flagship') throw new Error('the local model profile is Qwen3 8B 4-bit; use auto or flagship')
   return {
     profile: 'flagship',
@@ -96,7 +95,7 @@ export async function planManagedBackend(
     throw new Error('use /v1/chat/completions on an explicit loopback port for a managed backend')
   }
   const executable = path.resolve((options.ollama ?? options.llamaServer)!)
-  const tier = profile ?? localModel('auto', os.totalmem(), limits.memory_bytes)
+  const tier = profile ?? localModel('auto', hostMemoryBytes(), limits.memory_bytes)
   if (!dryRun && !tier.fits_memory_cap) {
     throw new Error(`Qwen3 8B 4-bit needs an estimated ${tier.working_memory_gib} GiB within the configured memory cap`)
   }

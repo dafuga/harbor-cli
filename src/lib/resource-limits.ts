@@ -1,11 +1,11 @@
 import {execFile} from 'node:child_process'
 import {randomUUID} from 'node:crypto'
 import fs from 'node:fs/promises'
-import os from 'node:os'
 import path from 'node:path'
 import {performance} from 'node:perf_hooks'
 import {promisify} from 'node:util'
 import {harborHome} from './config.js'
+import {hostCpuCores, hostMemoryBytes} from './host-policy.js'
 
 const exec = promisify(execFile)
 const SAMPLE_MS = 500
@@ -39,8 +39,8 @@ export function resourceLimits(options: LimitOptions = {}): ResourceLimits {
     cpu_percent,
     memory_percent,
     gpu_percent: percent(options.gpuPercent, '--gpu-percent', 0),
-    cpu_cores: os.availableParallelism() * cpu_percent / 100,
-    memory_bytes: Math.floor(os.totalmem() * memory_percent / 100),
+    cpu_cores: hostCpuCores() * cpu_percent / 100,
+    memory_bytes: Math.floor(hostMemoryBytes() * memory_percent / 100),
   }
 }
 

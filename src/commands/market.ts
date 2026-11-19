@@ -63,6 +63,12 @@ export interface AgentOpportunityReport {
   best: PrintableOpportunityWithUnable | null
   opportunities: PrintableOpportunityWithUnable[]
   hardwareSource?: 'detected' | 'simulated'
+  hardware?: {
+    cpuCores: number
+    memoryBytes: number
+    gpuKind: string
+    confidentialVm: string | null
+  }
 }
 
 export interface ReferralStats {
@@ -148,7 +154,11 @@ export async function buildAgentOpportunityReport(options: MarketOptions): Promi
     })),
   ])
   const report = buildAgentOpportunityReportFromSnapshot(snapshot, unableRows, options.agent, selection || undefined)
-  if (selection) report.hardwareSource = options.hardwareProfile ? 'simulated' : 'detected'
+  if (selection) {
+    const {cpuCores, memoryBytes, gpuKind, confidentialVm} = selection.host
+    report.hardwareSource = options.hardwareProfile ? 'simulated' : 'detected'
+    report.hardware = {cpuCores, memoryBytes, gpuKind, confidentialVm}
+  }
   return report
 }
 

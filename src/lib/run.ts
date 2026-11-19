@@ -4,12 +4,11 @@ import {once} from 'node:events'
 import fs from 'node:fs/promises'
 import fssync from 'node:fs'
 import net from 'node:net'
-import os from 'node:os'
 import path from 'node:path'
 import {artifactBinary, defaultRuntimeConfigPath, defaultRuntimeDataDir, isNodeRuntime, ResolveArtifactOptions, resolveArtifact, ResolvedArtifact, ServiceRuntime} from './artifacts.js'
 import {harborHome} from './config.js'
 import {verifyQwenGguf} from './gguf.js'
-import {checkDiskFloor, hostPolicy, hostState} from './host-policy.js'
+import {checkDiskFloor, hostMemoryBytes, hostPolicy, hostState} from './host-policy.js'
 import {createKvGateway} from './kv-cache.js'
 import {isLocalHttp, llamaCacheDirectory, LOCAL_BACKEND_KEY_ENV, localModel, ManagedBackend, ManagedBackendOptions, planManagedBackend} from './local-model.js'
 import {canConnect} from './ports.js'
@@ -239,7 +238,7 @@ async function runtimeConfig(config: string, service: ServiceRuntime, options: H
   const configuredBackend = (Object.keys(BACKEND_FIELDS) as Array<keyof BackendOptions>)
     .some((key) => options[key] !== undefined || process.env[BACKEND_FIELDS[key][1]] !== undefined)
   const profileName = options.modelProfile ?? (!existing && service.name === 'aiinfer' && (!configuredBackend || options.ollama || options.llamaServer) ? 'auto' : undefined)
-  const modelProfile = profileName ? localModel(profileName, os.totalmem(), limits.memory_bytes) : undefined
+  const modelProfile = profileName ? localModel(profileName, hostMemoryBytes(), limits.memory_bytes) : undefined
   const profileDefaults: BackendOptions = modelProfile ? {
     backendEndpoint: modelProfile.backend_endpoint,
     backendProtocol: 'openai',

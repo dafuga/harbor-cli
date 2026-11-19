@@ -33,6 +33,12 @@ export interface AgentOpportunityReport {
     best: PrintableOpportunityWithUnable | null;
     opportunities: PrintableOpportunityWithUnable[];
     hardwareSource?: 'detected' | 'simulated';
+    hardware?: {
+        cpuCores: number;
+        memoryBytes: number;
+        gpuKind: string;
+        confidentialVm: string | null;
+    };
 }
 export interface ReferralStats {
     account: string;
