@@ -57,7 +57,7 @@ jobs:
           npm install --no-package-lock
           npm run compile
           npm run check
-          node --test lib
+          node --test lib/*/*.test.js
       - name: Install Linux dependencies
         if: runner.os == 'Linux'
         run: |
@@ -176,7 +176,7 @@ jobs:
           cd "$HOME/harbor-cli"
           npm install --no-package-lock
           npm run compile
-          node --test lib
+          node --test lib/*/*.test.js
           mkdir -p daemon-build
           install -m 755 runtime-dist/harbor-aiinferd-linux-x64 daemon-build/harbor-aiinferd
           export HARBOR_DAEMON_DIR="$PWD/daemon-build"

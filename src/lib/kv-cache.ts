@@ -69,18 +69,17 @@ export async function createKvGateway(front: URL, engine: URL, settings: CachePo
     }
   }
 
-  async function save(slot: Slot): Promise<void> {
-    if (!slot.chat) return
+  async function save(slot: Slot): Promise<boolean> {
+    if (!slot.chat) return false
     const temporary = `${randomUUID()}.tmp`
     const temporaryPath = path.join(directory, temporary)
     try {
       const result = await slotAction(slot.id, 'save', temporary)
-      if (result.n_saved) {
-        await fs.chmod(temporaryPath, 0o600)
-        await fs.rename(temporaryPath, path.join(directory, `${slot.chat}.bin`))
-        saved++
-        await prune()
-      }
+      if (!result.n_saved) return false
+      await fs.chmod(temporaryPath, 0o600)
+      await fs.rename(temporaryPath, path.join(directory, `${slot.chat}.bin`))
+      await prune()
+      return true
     } finally {
       await fs.rm(temporaryPath, {force: true})
     }
@@ -88,9 +87,10 @@ export async function createKvGateway(front: URL, engine: URL, settings: CachePo
 
   async function bind(slot: Slot, chat?: string): Promise<void> {
     if (slot.chat === chat) return
-    await save(slot)
+    const savedToDisk = await save(slot)
     await slotAction(slot.id, 'erase')
     slot.chat = chat
+    if (savedToDisk) saved++
     if (chat) {
       const filename = `${chat}.bin`
       const file = path.join(directory, filename)
@@ -167,7 +167,7 @@ export async function createKvGateway(front: URL, engine: URL, settings: CachePo
       const body = JSON.stringify({...parsed, id_slot: slot.id, cache_prompt: true})
       const upstream = await fetch(engine, {
         method: 'POST',
-      headers: engineHeaders,
+        headers: engineHeaders,
         body,
         signal: AbortSignal.timeout(5 * 60_000),
       })

@@ -7,7 +7,7 @@ cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
 npm run compile
 npm run check
-node --test lib
+node --test lib/*/*.test.js
 node scripts/runtime-smoke.mjs "$@"
 if [[ "${HARBOR_VERIFY_NODEOS:-0}" == 1 ]]; then
   node scripts/node-smoke.mjs

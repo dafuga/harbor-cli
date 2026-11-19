@@ -42,6 +42,8 @@ test('local chat slots spill to private files and reload following a pressure pa
       slot.set(id, await fs.readFile(file, 'utf8'))
       response.end(JSON.stringify({n_restored: 1}))
     } else {
+      // The saved counter must stay unchanged until the source slot is released.
+      if (slot.has(id)) await delay(75)
       slot.delete(id)
       response.end('{}')
     }
