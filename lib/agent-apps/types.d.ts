@@ -135,6 +135,7 @@ export interface Delivery {
 }
 export interface Network {
     identity?: string;
+    localOnly?: boolean;
     models: Model[];
     baseModel?: string;
     specialtyModel?(id: string, version: number): string | undefined;

@@ -45,3 +45,9 @@ export interface HarborConfig {
     storageOrigins: Set<string>;
     vault: Map<string, VaultBinding>;
 }
+export interface LocalAgentConfig {
+    chainId: string;
+    account: string;
+    ollama: URL;
+    modelRevision: string;
+}

@@ -4,7 +4,7 @@ import {canonicalUint64} from '../lib/tx.js'
 import {specialtyManifest} from './specialties.js'
 import {serviceUrl, sha256} from './http.js'
 import {AgentError, alias, amount, hash, record, text} from './validation.js'
-import type {HarborConfig, HarborModel} from './network.types.js'
+import type {HarborConfig, HarborModel, LocalAgentConfig} from './network.types.js'
 
 export const HARBOR_TESTNET = 'd7e3ddbbf7e977f95d2f2d388926dd875e8a57c5a14259e8335b70b3b4bc498a'
 const LOCAL_TESTNET = 'cf057bbfb72640471fd910bcb67639c22df9f92470936cddc1ade0e2f2e7dc4f'
@@ -135,4 +135,16 @@ export function harborConfig(value: unknown, env = process.env): HarborConfig {
     account, permission, key: text(data.key, 'Named worker key', 80), models, currency: {symbol, precision},
     storageOrigins: new Set(storage.map(origin => serviceUrl(origin, 'HarborStore replica').origin)), vault,
   }
+}
+
+export function localAgentConfig(value: unknown): LocalAgentConfig {
+  const data = record(value)
+  const chainId = data.chainId === undefined ? HARBOR_TESTNET : text(data.chainId, 'Chain ID', 64)
+  if (chainId !== HARBOR_TESTNET && chainId !== LOCAL_TESTNET) throw new AgentError('Use a Harbor testnet identity.')
+  const ollama = serviceUrl(data.ollama ?? 'http://127.0.0.1:11434', 'Local Ollama')
+  if (!['127.0.0.1', '[::1]'].includes(ollama.hostname) || ollama.pathname !== '/') {
+    throw new AgentError('Local Ollama must use a loopback origin.')
+  }
+  return {chainId, ollama, account: name(data.account, 'Profile account'),
+    modelRevision: commitment(data.modelRevision, 'Local model revision')}
 }

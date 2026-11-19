@@ -49,7 +49,7 @@ export class AgentWorker {
 
   constructor(file: string, readonly host: string, private readonly network: Network, private readonly now = Date.now) {
     this.store = new AgentStore(file)
-    this.store.bind(JSON.stringify([network.identity, network.currency]))
+    this.store.bind(JSON.stringify([network.identity, network.currency, ...(network.localOnly ? ['local'] : [])]))
   }
 
   get identity() {
@@ -97,6 +97,7 @@ export class AgentWorker {
     const runs = this.store.query<Run>(`SELECT data FROM runs ${predicate} ORDER BY rowid DESC LIMIT 100`, id ?? null, id ?? null)
     return {
       host: this.host,
+      ...(this.network.localOnly ? {execution: 'local'} : {}),
       identity: this.network.identity,
       currency: this.network.currency,
       models: this.network.models,
@@ -172,6 +173,9 @@ export class AgentWorker {
       }
       const files = permissions(data.files ?? (manifest ? [] : undefined), hash, 'HarborStore content hashes')
       const secrets = permissions(data.secrets ?? (manifest ? [] : undefined), alias, 'HarborVault secret aliases')
+      if (this.network.localOnly && (files.length || secrets.length)) {
+        throw new AgentError('External files and Vault keys are unavailable for local agents.', 403)
+      }
       if (manifest && secrets.length) throw new AgentError('This specialty does not allow HarborVault keys.', 403)
       const managedAgents = permissions(data.managedAgents ?? existing?.managedAgents ?? [],
         item => /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(item), 'managed agents')
@@ -513,7 +517,7 @@ export class AgentWorker {
             assertActive()
             this.log('inference_dispatch', {agentId: agent.id, runId: original.id})
           })
-          submitted = true
+          submitted = !this.network.localOnly
         },
         submitted: inferId => this.store.transaction(() => {
           this.saveRun({...this.run(original.id), inferId}, 'inference_submitted', inferId)
@@ -525,9 +529,10 @@ export class AgentWorker {
       paid = delivery.paid
       result = delivery.text
       const {inferId} = this.run(original.id)
-      if (!inferId) throw new Error('Inference receipt is missing.')
+      if (!inferId && (!this.network.localOnly || delivery.calls.length)) throw new Error('Inference receipt is missing.')
       this.store.transaction(() => this.log('inference_delivered', {agentId: agent.id, runId: original.id, detail: inferId}))
       for (const call of delivery.calls) {
+        if (!inferId) throw new Error('Tool calls require an inference receipt.')
         assertActive()
         const permitted = call.name === 'read_file' ? agent.files.includes(call.resource) : agent.secrets.includes(call.resource)
         if (!permitted) throw new AgentError('Agent lacks permission for a proposed tool.', 403)

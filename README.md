@@ -964,6 +964,26 @@ events and spending reservations in a SQLite database. Node.js 22.13 or newer
 is required for the worker. The rest of the CLI keeps its existing Node.js
 minimum.
 
+For Harbor V1 on your own computer, use the same command with a local profile.
+Use the exact \`digest\` for the installed \`qwen3:8b-q4_K_M\` tag from the local
+Ollama model list. Use a separate database from any network worker.
+
+\`\`\`json
+{
+  "mode": "local",
+  "account": "agenttest",
+  "ollama": "http://127.0.0.1:11434",
+  "modelRevision": "<installed Ollama model digest>"
+}
+\`\`\`
+
+The local profile makes text-only requests to loopback Ollama. It requires
+no wallet key, uses zero-fee confirmations, and keeps specialty feedback in
+the local worker database. The selected testnet identity must match the app.
+The worker can serve a paired phone while the computer is online.
+
+### Harbor testnet network workers
+
 Use an isolated Harbor CLI home for the worker. Create a named encrypted K1
 key there and link its dedicated account permission to these actions:
 

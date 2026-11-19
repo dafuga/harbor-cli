@@ -127,3 +127,95 @@ test('worker and trigger credentials are isolated, with no token in URLs or stat
     await rm(temp, {recursive: true, force: true})
   }
 })
+
+test('the local worker runs a confirmed specialty without chain credentials or paid inference', async t => {
+  const {randomUUID} = await import('node:crypto')
+  const {spawn} = await import('node:child_process')
+  const {createServer} = await import('node:http')
+  const {writeFile} = await import('node:fs/promises')
+  const {setTimeout: delay} = await import('node:timers/promises')
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'harbor-local-agents-'))
+  t.after(() => rm(directory, {recursive: true, force: true}))
+  const model = 'qwen3:8b-q4_K_M'
+  const revision = 'f'.repeat(64)
+  let seen = 0
+  const upstream = createServer(async (request, response) => {
+    response.setHeader('content-type', 'application/json')
+    if (request.url === '/api/tags') {
+      response.end(JSON.stringify({models: [{name: model, digest: revision,
+        details: {family: 'qwen3', parameter_size: '8.2B', quantization_level: 'Q4_K_M'}}]}))
+      return
+    }
+    assert.equal(request.url, '/api/chat')
+    const parts = []
+    for await (const chunk of request) parts.push(chunk)
+    const data = JSON.parse(Buffer.concat(parts).toString())
+    assert.equal(data.model, model)
+    assert.equal(data.stream, false)
+    assert.match(data.messages[0].content, /Harness/)
+    assert.equal(data.messages.at(-1).content, 'Review the local checks.')
+    seen++
+    response.end(JSON.stringify({model, done: true, message: {content: 'Local response'}}))
+  }).listen(0, '127.0.0.1')
+  t.after(() => new Promise<void>(resolve => upstream.close(() => resolve())))
+  await once(upstream, 'listening')
+  const address = upstream.address()
+  assert.ok(address && typeof address === 'object')
+  const spare = createServer().listen(0, '127.0.0.1')
+  await once(spare, 'listening')
+  const bind = spare.address()
+  assert.ok(bind && typeof bind === 'object')
+  await new Promise<void>(resolve => spare.close(() => resolve()))
+  const options = path.join(directory, 'worker.json')
+  await writeFile(options, JSON.stringify({mode: 'local', account: 'localagent',
+    ollama: 'http://127.0.0.1:' + address.port, modelRevision: revision}))
+  const token = randomBytes(32).toString('base64url')
+  const workerProcess = spawn(process.execPath, ['lib/index.js', 'agents', 'serve', '--config', options,
+    '--db', path.join(directory, 'agent.sqlite'), '--port', String(bind.port)], {
+    cwd: new URL('../../', import.meta.url), env: {PATH: '/usr/bin:/bin', HARBOR_AGENT_TOKEN: token},
+    stdio: ['ignore', 'pipe', 'pipe'],
+  })
+  const launched = once(workerProcess, 'spawn')
+  let exited = false
+  const stopped = once(workerProcess, 'exit').then(([status]) => { exited = true; return status })
+  let startupError = ''
+  workerProcess.stderr.on('data', chunk => { startupError += String(chunk) })
+  const endpoint = 'http://127.0.0.1:' + bind.port + '/v1'
+  const call = (resource: string, data?: object) => fetch(endpoint + resource, {
+    method: data ? 'POST' : 'GET', headers: {authorization: 'Bearer ' + token, 'content-type': 'application/json'},
+    body: data ? JSON.stringify(data) : undefined,
+  })
+  try {
+    await launched
+    let state
+    for (let i = 0; i < 40 && !exited; i++) {
+      state = await call('/state').then(response => response.json()).catch(() => undefined)
+      if (state) break
+      await delay(25)
+    }
+    assert.equal(state?.execution, 'local', startupError)
+    const input = {name: 'Harness fixture', specialty: 'harness-coder', perRun: 0, total: 0, requestId: revision}
+    assert.equal((await call('/agents', {...input, files: [randomUUID().replaceAll('-', '').repeat(2)]})).status, 403)
+    const agent = await call('/agents', input).then(response => response.json())
+    const quote = await call('/agents/' + agent.id + '/quote', {message: 'Review the local checks.'})
+      .then(response => response.json())
+    assert.equal(quote.maxCost, 0)
+    assert.equal(seen, 0)
+    const run = await call('/confirm/' + quote.id, {}).then(response => response.json())
+    let result
+    for (let i = 0; i < 60; i++) {
+      result = (await call('/state').then(response => response.json())).runs.find((item: {id: string}) => item.id === run.id)
+      if (result.status === 'completed') break
+      await delay(50)
+    }
+    assert.equal(result.status, 'completed')
+    assert.equal(result.paid, 0)
+    assert.equal(result.inferId, undefined)
+    assert.equal(result.modelRevision, revision)
+    assert.equal(result.result, 'Local response')
+    assert.equal(seen, 1)
+  } finally {
+    if (!exited) workerProcess.kill('SIGTERM')
+    await stopped
+  }
+})

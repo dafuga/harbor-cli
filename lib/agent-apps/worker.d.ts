@@ -17,7 +17,6 @@ export declare class AgentWorker {
     private log;
     private saveRun;
     snapshot(id?: string): {
-        host: string;
         identity: string | undefined;
         currency: {
             symbol: string;
@@ -47,6 +46,8 @@ export declare class AgentWorker {
         routines: Routine[];
         runs: Run[];
         audit: AuditEntry[];
+        execution?: string | undefined;
+        host: string;
     };
     private executionAgent;
     private taskPrompt;
