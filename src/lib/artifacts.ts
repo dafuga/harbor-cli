@@ -52,6 +52,7 @@ export interface ResolveArtifactOptions {
   artifactHash?: string
   sha256?: string
   forceInstall?: boolean
+  localInstalledOnly?: boolean
   url?: string
   marketContract?: string
   storageContract?: string
@@ -88,6 +89,8 @@ export const SERVICE_RUNTIMES: ServiceRuntime[] = [
   {name: 'aitrain', aliases: ['ai-train', 'training', 'trainer'], daemon: 'harbor-aitraind', serviceTypeId: 19, portOffset: 18},
   {name: 'airouter', aliases: ['ai-router', 'model-router'], daemon: 'harbor-airouterd', serviceTypeId: 20, portOffset: 19},
   {name: 'keycustody', aliases: ['key-custody', 'custody'], daemon: 'harbor-keycustodyd', serviceTypeId: 21, portOffset: 20},
+  {name: 'sealedcompute', aliases: ['sealed-compute'], daemon: 'harbor-sealedcomputed', serviceTypeId: 23, portOffset: 22},
+  {name: 'relay', aliases: [], daemon: 'harbor-relayd', serviceTypeId: 24, portOffset: 23},
   {name: 'scheduler', aliases: ['check-scheduler'], daemon: 'harbor-check-scheduler', serviceTypeId: 13, portOffset: 50},
 ]
 
@@ -187,7 +190,7 @@ async function resolvePathBinary(binary: string): Promise<string | null> {
   return null
 }
 
-async function resolveLocal(service: ServiceRuntime, version: string, forceInstall?: boolean): Promise<ResolvedArtifact | null> {
+async function resolveLocal(service: ServiceRuntime, version: string, allowBuild: boolean, forceInstall?: boolean): Promise<ResolvedArtifact | null> {
   const packagedDir = process.env.HARBOR_DAEMON_DIR
   if (packagedDir) {
     const binary = path.resolve(packagedDir, service.daemon)
@@ -203,6 +206,10 @@ async function resolveLocal(service: ServiceRuntime, version: string, forceInsta
     return {binary: buildBinary, version, source: 'local', installed: false, provenance: repo}
   }
 
+  if (!allowBuild) {
+    const binary = await resolvePathBinary(service.daemon)
+    return binary ? {binary, version, source: 'path', installed: false, provenance: 'PATH'} : null
+  }
   try {
     await fs.access(path.join(repo, 'CMakeLists.txt'))
     const configure = spawnSync('cmake', ['-S', repo, '-B', path.join(repo, 'build')], {stdio: 'inherit'})
@@ -457,7 +464,7 @@ export async function resolveArtifact(options: ResolveArtifactOptions): Promise<
     }
   }
   if (source === 'auto' || source === 'local') {
-    const local = await resolveLocal(options.service, version, options.forceInstall)
+    const local = await resolveLocal(options.service, version, !options.localInstalledOnly, options.forceInstall)
     if (local || source === 'local') {
       if (!local) {
         throw new Error(`local binary not found for ${options.service.name}`)

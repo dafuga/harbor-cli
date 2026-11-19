@@ -5,24 +5,33 @@ import {
   MarketOptions as OpportunityMarketOptions,
   MarketSnapshot,
   Opportunity,
+  allMarketRows,
   bestOpportunity,
   buildOpportunities,
   getTableRows,
   isActive,
   loadMarket,
+  type OpportunitySelection,
+  printableOpportunity,
+  rankServiceDemand,
   recommendation,
 } from '../lib/opportunities.js'
 import {addTxOptions, pushJsonAction} from './action.js'
 import {buildActionData} from './action-fields.js'
 import type {Field} from './action-fields.js'
 import {addMarketActionCommands} from './market-actions.js'
+import {defaultRuntimeDataDir, normalizeServiceName} from '../lib/artifacts.js'
+import {serviceHost, type ServiceHostOptions} from '../lib/host-policy.js'
+import {marketLimits, type LimitOptions} from '../lib/resource-limits.js'
 
-export interface MarketOptions extends OpportunityMarketOptions {
+export interface MarketOptions extends OpportunityMarketOptions, ServiceHostOptions, LimitOptions {
   url: string
   contract: string
   json?: boolean
   best?: boolean
   agent?: string
+  exclude?: string[]
+  dataDir?: string
 }
 
 export type {Field} from './action-fields.js'
@@ -41,7 +50,7 @@ export type OpportunityWithUnable = Opportunity & {
   unableUpdatedAt?: string
 }
 
-export type PrintableOpportunityWithUnable = Omit<OpportunityWithUnable, 'estimatedProviderRewardAmount'>
+export type PrintableOpportunityWithUnable = Omit<OpportunityWithUnable, 'estimatedProviderRewardAmount' | 'hourlyRewardAmount'>
 
 export interface AgentOpportunityReport {
   rewardPool?: string
@@ -49,6 +58,7 @@ export interface AgentOpportunityReport {
   unable: UnableOpportunity[]
   best: PrintableOpportunityWithUnable | null
   opportunities: PrintableOpportunityWithUnable[]
+  hardwareSource?: 'detected' | 'simulated'
 }
 
 export interface ReferralStats {
@@ -66,18 +76,17 @@ export function buildMarketActionData(fields: Field[], values: string[]): Record
   return buildActionData(fields, values)
 }
 
-function printableOpportunityWithUnable(opportunity: OpportunityWithUnable): PrintableOpportunityWithUnable {
-  const {estimatedProviderRewardAmount: _estimatedProviderRewardAmount, ...printable} = opportunity
-  return printable
-}
-
 export function buildAgentOpportunityReportFromSnapshot(
   snapshot: MarketSnapshot,
   unableRows: UnableOpportunity[] = [],
-  agent?: string
+  agent?: string,
+  selection?: OpportunitySelection
 ): AgentOpportunityReport {
   const unableByServiceType = new Map(unableRows.map((row) => [Number(row.service_type), row]))
-  const opportunities: OpportunityWithUnable[] = buildOpportunities(snapshot.types, snapshot.services).map((opportunity) => {
+  const candidates = selection
+    ? rankServiceDemand(snapshot, {...selection, agent})
+    : buildOpportunities(snapshot.types, snapshot.services)
+  const opportunities: OpportunityWithUnable[] = candidates.map((opportunity) => {
     const unable = unableByServiceType.get(opportunity.id)
     if (!unable) {
       return opportunity
@@ -86,19 +95,24 @@ export function buildAgentOpportunityReportFromSnapshot(
     return {
       ...opportunity,
       status: 'unable',
+      reason: unable.reason,
+      hourlyRewardAmount: undefined,
+      estimatedHourlyReward: undefined,
       unableReason: unable.reason,
       unableMetadata: unable.metadata,
       unableUpdatedAt: unable.updated_at,
     }
   })
-  const best = bestOpportunity(opportunities)
+  const best = selection
+    ? opportunities.find((opportunity) => opportunity.status === 'open' && (opportunity.hourlyRewardAmount ?? 0) > 0)
+    : bestOpportunity(opportunities)
 
   return {
     rewardPool: snapshot.state?.reward_pool,
     agent,
     unable: unableRows,
-    best: best ? printableOpportunityWithUnable(best as OpportunityWithUnable) : null,
-    opportunities: opportunities.map(printableOpportunityWithUnable),
+    best: best ? printableOpportunity(best) : null,
+    opportunities: opportunities.map(printableOpportunity),
   }
 }
 
@@ -107,16 +121,31 @@ async function loadUnableOpportunities(options: MarketOptions): Promise<UnableOp
     return []
   }
 
-  const unable = await getTableRows<UnableOpportunity>(options.url, options.contract, 'unables', {scope: options.agent})
-  return unable.rows
+  return allMarketRows<UnableOpportunity>(options, 'unables', options.agent)
 }
 
-async function buildAgentOpportunityReport(options: MarketOptions): Promise<AgentOpportunityReport> {
-  const [snapshot, unableRows] = await Promise.all([
-    loadMarket(options),
+export function addMarketSelectionOptions(command: Command): Command {
+  return command
+    .option('--hardware-profile <path>', 'diagnostic JSON profile for a simulated host')
+    .option('--always-on', 'this host can stay online for background services')
+    .option('--bandwidth-mbps <mbps>', 'measured available uplink before applying the 50% budget')
+    .option('--exclude <service...>', 'omit these services from demand-based selection')
+}
+
+export async function buildAgentOpportunityReport(options: MarketOptions): Promise<AgentOpportunityReport> {
+  const [snapshot, unableRows, selection] = await Promise.all([
+    loadMarket(options, Boolean(options.best)),
     loadUnableOpportunities(options),
+    options.best && Promise.all([
+      serviceHost(options.dataDir ?? defaultRuntimeDataDir(), options),
+      marketLimits(options),
+    ]).then(([host, limits]) => ({
+      host, limits, exclude: new Set(options.exclude?.map((name) => normalizeServiceName(name).name)),
+    })),
   ])
-  return buildAgentOpportunityReportFromSnapshot(snapshot, unableRows, options.agent)
+  const report = buildAgentOpportunityReportFromSnapshot(snapshot, unableRows, options.agent, selection || undefined)
+  if (selection) report.hardwareSource = options.hardwareProfile ? 'simulated' : 'detected'
+  return report
 }
 
 function serviceTypeMatches(serviceType: HarborServiceType, service: string): boolean {
@@ -151,13 +180,17 @@ async function loadReferralReport(options: MarketOptions): Promise<ReferralRepor
 
 function addOpportunitiesCommand(market: Command): void {
   const opportunities = new Command('opportunities')
-  opportunities
+  addMarketSelectionOptions(opportunities)
     .description('Show token opportunities for agents')
     .option('-u, --url <url>', 'Harbor chain API URL', process.env.HARBOR_API_URL ?? 'http://127.0.0.1:8888')
     .option('-c, --contract <account>', 'service market contract account', process.env.HARBOR_MARKET_CONTRACT ?? 'svcmarket')
     .option('-a, --agent <account>', 'agent account used to filter unable opportunities')
     .option('--json', 'print JSON')
-    .option('--best', 'show the best current opportunity for one agent')
+    .option('--cpu-percent <percent>', 'CPU share, capped at 50%')
+    .option('--memory-percent <percent>', 'RAM share, capped at 50%')
+    .option('--gpu-percent <percent>', 'GPU share, capped at 50%')
+    .option('--data-dir <path>', 'runtime directory whose available disk space is checked')
+    .option('--best', 'rank by estimated hourly earnings for this host')
     .action(async (options: MarketOptions) => {
       const report = await buildAgentOpportunityReport(options)
 
@@ -168,13 +201,10 @@ function addOpportunitiesCommand(market: Command): void {
 
       console.log(`Reward pool: ${report.rewardPool ?? 'unknown'}`)
       if (options.best) {
-        if (!report.best) {
-          console.log('No open opportunities.')
-          return
-        }
-
-        console.log(recommendation(report.best))
-        console.table([report.best])
+        console.log(report.best ? recommendation(report.best) : 'No eligible opportunity with current priced demand.')
+        console.table(report.opportunities.map(({name, status, estimatedHourlyReward, reason}) => ({
+          name, status, estimatedHourlyReward, reason,
+        })))
         return
       }
 

@@ -504,3 +504,48 @@ test('agent unable markers remove opportunities from best selection', () => {
   assert.equal(router?.status, 'unable')
   assert.equal(router?.unableReason, 'requires a domain')
 })
+
+test('market --best ranks fresh on-chain demand against the selected host profile', async (t) => {
+  const {writeFile, mkdtemp, rm} = await import('node:fs/promises')
+  const {tmpdir} = await import('node:os')
+  const {join} = await import('node:path')
+  const temporary = await mkdtemp(join(tmpdir(), 'harbor-market-'))
+  t.after(() => rm(temporary, {recursive: true, force: true}))
+  const profile = join(temporary, 'host.json')
+  const GiB = 2 ** 30
+  const host = {
+    cpuCores: 8, memoryBytes: 16 * GiB, availableMemoryBytes: 14 * GiB,
+    gpuKind: 'apple-unified', gpuBytes: 16 * GiB, freeDiskBytes: 64 * GiB,
+    bandwidthMbps: 100, alwaysOn: true, confidentialVm: null,
+  }
+  const estimate = (unitsPerHour: number, unitPrice: string) => JSON.stringify({
+    demand: {unitsPerHour, unitPrice, expiresAt: new Date(Date.now() + 60_000).toISOString()},
+  })
+  const types = [
+    {...serviceType(8, 'bp', '100.0000 SYS')},
+    {...serviceType(18, 'aiinfer', '1.0000 SYS'), metadata: estimate(10, '1.0000 SYS')},
+    {...serviceType(23, 'sealedcompute', '50.0000 SYS'), metadata: estimate(100, '1.0000 SYS')},
+    {...serviceType(24, 'relay', '1.0000 SYS'), metadata: estimate(5, '1.0000 SYS')},
+  ]
+  t.mock.method(globalThis, 'fetch', async (_url: unknown, request?: RequestInit) => {
+    const table = JSON.parse(String(request?.body)).table
+    return new Response(JSON.stringify({rows: table === 'svctypes' ? types : [], more: false}))
+  })
+  const output: string[] = []
+  t.mock.method(console, 'log', (line: string) => output.push(line))
+
+  async function report(hardware: object, extra: string[] = []) {
+    await writeFile(profile, JSON.stringify(hardware))
+    const program = new Command().exitOverride().addCommand(createMarketCommand())
+    program.commands[0].commands.find((command) => command.name() === 'opportunities')?.exitOverride()
+    await program.parseAsync(['market', 'opportunities', '--best', '--json', '--hardware-profile', profile, ...extra], {from: 'user'})
+    return JSON.parse(output.pop()!)
+  }
+
+  const mac = await report(host)
+  assert.equal(mac.best.name, 'aiinfer')
+  assert.match(mac.opportunities.find(({name}: {name: string}) => name === 'sealedcompute').reason, /SEV-SNP or TDX/)
+  assert.equal((await report({...host, cpuCores: 2, memoryBytes: GiB, availableMemoryBytes: 0.8 * GiB, gpuKind: 'none', gpuBytes: 0})).best.name, 'relay')
+  assert.equal((await report({...host, confidentialVm: 'sev-snp'})).best.name, 'sealedcompute')
+  assert.equal((await report(host, ['--exclude', 'aiinfer'])).best.name, 'relay')
+})

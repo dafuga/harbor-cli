@@ -1,3 +1,5 @@
+import type { ServiceHost } from './host-policy.js';
+import type { ResourceLimits } from './resource-limits.js';
 export interface TableRowsResponse<T> {
     rows: T[];
     more: boolean | string;
@@ -18,6 +20,7 @@ export interface HarborServiceType {
     min_oracle_stake: string;
     min_oracle_reports: number;
     min_check_window_sec: number;
+    metadata?: string;
 }
 export interface HarborService {
     id: number;
@@ -40,9 +43,14 @@ export interface MarketOptions {
     url: string;
     contract: string;
 }
+interface ServiceTtl {
+    service_type: number | string;
+    ttl_sec: number;
+}
 export interface MarketSnapshot {
     types: HarborServiceType[];
     services: HarborService[];
+    ttls?: ServiceTtl[];
     state?: HarborState;
 }
 export interface Opportunity {
@@ -57,13 +65,20 @@ export interface Opportunity {
     estimatedProviderRewardAmount: number;
     baseProviderReward: string;
     status: string;
+    reason?: string;
+    demandUnitsPerHour?: number;
+    unitPrice?: string;
+    unit?: string;
+    capacityUnitsPerHour?: number;
+    estimatedHourlyReward?: string;
+    hourlyRewardAmount?: number;
 }
 export interface OpportunityReport {
     rewardPool?: string;
     best: PrintableOpportunity | null;
     opportunities: PrintableOpportunity[];
 }
-export type PrintableOpportunity = Omit<Opportunity, 'estimatedProviderRewardAmount'>;
+export type PrintableOpportunity = Omit<Opportunity, 'estimatedProviderRewardAmount' | 'hourlyRewardAmount'>;
 export declare function normalizeUrl(url: string): string;
 export declare function getTableRows<T>(url: string, contract: string, table: string, options?: {
     scope?: string;
@@ -72,10 +87,21 @@ export declare function getTableRows<T>(url: string, contract: string, table: st
 export declare function parseAssetAmount(asset: string): number;
 export declare function assetSymbol(asset: string): string;
 export declare function isActive(value: boolean | number): boolean;
-export declare function loadMarket(options: MarketOptions): Promise<MarketSnapshot>;
+export declare function allMarketRows<T>(options: MarketOptions, table: string, scope?: string): Promise<T[]>;
+export declare function loadMarket(options: MarketOptions, withDemand?: boolean): Promise<MarketSnapshot>;
 export declare function buildOpportunities(types: HarborServiceType[], services: HarborService[]): Opportunity[];
+export declare const RELAY_MEMORY_FLOOR: number;
+export interface OpportunitySelection {
+    host: ServiceHost;
+    limits: ResourceLimits;
+    exclude?: Set<string>;
+    now?: number;
+    agent?: string;
+}
+export declare function rankServiceDemand(snapshot: MarketSnapshot, selection: OpportunitySelection): Opportunity[];
 export declare function bestOpportunity(opportunities: Opportunity[]): Opportunity | undefined;
 export declare function printableOpportunity(opportunity: Opportunity): PrintableOpportunity;
 export declare function printableOpportunities(opportunities: Opportunity[]): PrintableOpportunity[];
 export declare function buildOpportunityReport(snapshot: MarketSnapshot): OpportunityReport;
 export declare function recommendation(opportunity: PrintableOpportunity): string;
+export {};

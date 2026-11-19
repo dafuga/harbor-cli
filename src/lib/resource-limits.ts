@@ -48,17 +48,30 @@ function limitsPath(): string {
   return path.resolve(harborHome(), 'limits.json')
 }
 
-export async function configuredLimits(overrides: LimitOptions = {}): Promise<ResourceLimits> {
-  let defaults: LimitOptions = {}
+async function readLimits(): Promise<LimitOptions> {
   try {
-    defaults = JSON.parse(await fs.readFile(limitsPath(), 'utf8')) as LimitOptions
+    return JSON.parse(await fs.readFile(limitsPath(), 'utf8')) as LimitOptions
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+    return {}
   }
+}
+
+export async function configuredLimits(overrides: LimitOptions = {}): Promise<ResourceLimits> {
+  const defaults = await readLimits()
   return resourceLimits({
     cpuPercent: overrides.cpuPercent ?? defaults.cpuPercent,
     gpuPercent: overrides.gpuPercent ?? defaults.gpuPercent,
     memoryPercent: overrides.memoryPercent ?? defaults.memoryPercent,
+  })
+}
+
+export async function marketLimits(overrides: LimitOptions = {}): Promise<ResourceLimits> {
+  const defaults = await readLimits()
+  return resourceLimits({
+    cpuPercent: Math.min(50, percent(overrides.cpuPercent ?? defaults.cpuPercent ?? 50, '--cpu-percent')),
+    gpuPercent: Math.min(50, percent(overrides.gpuPercent ?? defaults.gpuPercent ?? 50, '--gpu-percent', 0)),
+    memoryPercent: Math.min(50, percent(overrides.memoryPercent ?? defaults.memoryPercent ?? 50, '--memory-percent')),
   })
 }
 

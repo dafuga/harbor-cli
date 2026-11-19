@@ -31,6 +31,7 @@ export function localModel(profile = 'auto', totalMemory = os.totalmem(), memory
     expert_adapter_base: QWEN3_8B.base_checkpoint,
     backend_endpoint: LOCAL_BACKEND_ENDPOINT,
     fits_memory_cap: memoryBudget >= QWEN3_8B.working_memory_gib * GiB,
+    meets_hardware_minimum: totalMemory >= 16 * GiB,
   }
 }
 
