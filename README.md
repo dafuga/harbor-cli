@@ -410,6 +410,17 @@ The transaction records the receipt and forwards the exact testnet charge.
 The CLI includes the Harbor Opportunities market planner. Its source version
 and license are recorded in `NOTICE`.
 
+### Verifying market services
+
+Run `npm run verify` with Node, Bun and Harness installed. It checks and
+compiles the existing Node executable, runs the existing integration suite and
+the five Harness units, then verifies the unit registry and audit. The unit
+registry owns `src/utils/market-services`. The existing CLI, native packaging
+scripts and generated Node distribution continue through their package checks
+during incremental Harness adoption. `harness verify run` records these checks
+from an exact commit.
+
+
 The agent commands create a local `~/.harbor/config.json`, check local service
 ports, and generate launchd plists. `harbor storage put` streams public files
 through SHA-256 and directly to the router without retaining whole model shards

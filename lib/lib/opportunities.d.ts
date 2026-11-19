@@ -1,5 +1,6 @@
-import type { ServiceHost } from './host-policy.js';
-import type { ResourceLimits } from './resource-limits.js';
+import type { OpportunitySelection } from '../utils/market-services/demandRanking.types.js';
+export type { OpportunitySelection } from '../utils/market-services/demandRanking.types.js';
+export { RELAY_MEMORY_FLOOR } from '../utils/market-services/serviceEligibility.js';
 export interface TableRowsResponse<T> {
     rows: T[];
     more: boolean | string;
@@ -90,18 +91,9 @@ export declare function isActive(value: boolean | number): boolean;
 export declare function allMarketRows<T>(options: MarketOptions, table: string, scope?: string): Promise<T[]>;
 export declare function loadMarket(options: MarketOptions, withDemand?: boolean): Promise<MarketSnapshot>;
 export declare function buildOpportunities(types: HarborServiceType[], services: HarborService[]): Opportunity[];
-export declare const RELAY_MEMORY_FLOOR: number;
-export interface OpportunitySelection {
-    host: ServiceHost;
-    limits: ResourceLimits;
-    exclude?: Set<string>;
-    now?: number;
-    agent?: string;
-}
 export declare function rankServiceDemand(snapshot: MarketSnapshot, selection: OpportunitySelection): Opportunity[];
 export declare function bestOpportunity(opportunities: Opportunity[]): Opportunity | undefined;
 export declare function printableOpportunity(opportunity: Opportunity): PrintableOpportunity;
 export declare function printableOpportunities(opportunities: Opportunity[]): PrintableOpportunity[];
 export declare function buildOpportunityReport(snapshot: MarketSnapshot): OpportunityReport;
 export declare function recommendation(opportunity: PrintableOpportunity): string;
-export {};

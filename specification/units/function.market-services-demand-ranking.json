@@ -1,0 +1,138 @@
+{
+	"schemaVersion": 1,
+	"id": "function.market-services-demand-ranking",
+	"uid": "u_uadwyn2yyv",
+	"kind": "function",
+	"title": "demandRanking",
+	"responsibility": "Rank eligible service opportunities against priced demand and live provider supply.",
+	"responsibilityOrigin": "declared",
+	"status": "active",
+	"owns": {
+		"source": [
+			"src/utils/market-services/demandRanking.ts",
+			"src/utils/market-services/demandRanking.types.ts"
+		],
+		"symbols": ["liveProviderRows", "demandRanking", "OpportunitySelection"]
+	},
+	"contract": {
+		"origin": "declared",
+		"inputs": [
+			{
+				"name": "liveProviderRows.snapshot",
+				"type": "MarketSnapshot",
+				"required": true
+			},
+			{
+				"name": "liveProviderRows.now",
+				"type": "number",
+				"required": true,
+				"description": "Omits an explicit clock override and uses the current time."
+			},
+			{
+				"name": "demandRanking.opportunities",
+				"type": "Opportunity[]",
+				"required": true
+			},
+			{
+				"name": "demandRanking.snapshot",
+				"type": "MarketSnapshot",
+				"required": true
+			},
+			{
+				"name": "demandRanking.selection",
+				"type": "OpportunitySelection",
+				"required": true
+			}
+		],
+		"outputs": [
+			{
+				"name": "liveProviderRows",
+				"type": "MarketSnapshot['services']"
+			},
+			{
+				"name": "demandRanking",
+				"type": "Opportunity[]"
+			}
+		],
+		"errors": [],
+		"errorStatus": "declared",
+		"operations": [
+			{
+				"name": "liveProviderRows",
+				"inputs": [
+					{
+						"name": "liveProviderRows.snapshot",
+						"type": "MarketSnapshot",
+						"required": true
+					},
+					{
+						"name": "liveProviderRows.now",
+						"type": "number",
+						"required": true,
+						"description": "Omits an explicit clock override and uses the current time."
+					}
+				],
+				"outputs": [
+					{
+						"name": "liveProviderRows",
+						"type": "MarketSnapshot['services']"
+					}
+				],
+				"errors": [],
+				"errorStatus": "declared"
+			},
+			{
+				"name": "demandRanking",
+				"inputs": [
+					{
+						"name": "demandRanking.opportunities",
+						"type": "Opportunity[]",
+						"required": true
+					},
+					{
+						"name": "demandRanking.snapshot",
+						"type": "MarketSnapshot",
+						"required": true
+					},
+					{
+						"name": "demandRanking.selection",
+						"type": "OpportunitySelection",
+						"required": true
+					}
+				],
+				"outputs": [
+					{
+						"name": "demandRanking",
+						"type": "Opportunity[]"
+					}
+				],
+				"errors": [],
+				"errorStatus": "declared"
+			}
+		],
+		"initialization": []
+	},
+	"dependencies": [
+		{
+			"unit": "function.market-services-service-eligibility",
+			"via": "import",
+			"origin": "derived"
+		}
+	],
+	"runtime": {
+		"kind": "module",
+		"entry": "src/utils/market-services/demandRanking.ts",
+		"targets": [
+			{
+				"kind": "module",
+				"entry": "src/utils/market-services/demandRanking.ts"
+			}
+		]
+	},
+	"scenarios": [],
+	"budgets": {
+		"size": "frozen",
+		"complexity": "frozen",
+		"performance": []
+	}
+}

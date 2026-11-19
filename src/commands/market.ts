@@ -17,10 +17,11 @@ import {
   rankServiceDemand,
   recommendation,
 } from '../lib/opportunities.js'
-import {addTxOptions, pushJsonAction, type ActionOptions} from './action.js'
-import {verifyRelayReceipt, type SignedRelayReceipt} from '../lib/relay-receipt.js'
-import {permissionLevel, printResult, serializeAction, transactActions} from '../lib/tx.js'
-import {reviewTransaction} from '../lib/terminal-ui.js'
+import {addTxOptions, pushJsonAction} from './action.js'
+import type {SignedRelayReceipt} from '../lib/relay-receipt.js'
+import {printResult} from '../lib/tx.js'
+import {relayPayment} from '../utils/market-services/relayPayment.js'
+import type {RelayPaymentOptions} from '../utils/market-services/relayPayment.types.js'
 import {buildActionData} from './action-fields.js'
 import type {Field} from './action-fields.js'
 import {addMarketActionCommands} from './market-actions.js'
@@ -319,27 +320,9 @@ function addRelayPaymentCommand(market: Command): void {
     .requiredOption('--recipient-key <public-key>', 'previously authorized one-time recipient receipt key')
     .option('--relay-contract <account>', 'delivery settlement contract account', 'harborrelay')
     .option('--yes', 'approve the exact payment without an interactive prompt')
-    .action(async (file: string, options: ActionOptions & {recipientKey: string; relayContract: string; yes?: boolean}) => {
+    .action(async (file: string, options: RelayPaymentOptions) => {
       const receipt = JSON.parse(await fs.readFile(file, 'utf8')) as SignedRelayReceipt
-      const signer = permissionLevel(options)
-      if (!options.expectChainId || options.expectChainId.toLowerCase() !== receipt.chain_id) {
-        throw new Error('--expect-chain-id must match the signed relay receipt')
-      }
-      if (receipt.contract !== options.relayContract || receipt.payer !== signer.actor || options.auth) {
-        throw new Error('the relay contract and signing payer must match the signed receipt')
-      }
-      verifyRelayReceipt(receipt, options.recipientKey)
-      const {chain_id, contract, ...data} = receipt
-      const actions = await Promise.all([
-        serializeAction({...options, contract, action: 'record', data}),
-        serializeAction({...options, contract: 'eosio.token', action: 'transfer', data: {
-          from: receipt.payer, to: contract, quantity: receipt.charge, memo: `relay:${receipt.receipt_id}`,
-        }}),
-      ])
-      const result = await transactActions(options, actions, () => reviewTransaction({
-        chain: chain_id, settlement: contract, payer: receipt.payer, provider: receipt.provider,
-        delivery: receipt.receipt_id, bytes: receipt.bytes, charge: receipt.charge, expires_at: receipt.expires_at,
-      }, options.yes))
+      const result = await relayPayment(receipt, options)
       printResult(result, options.json)
     })
 }

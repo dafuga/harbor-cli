@@ -1,0 +1,142 @@
+{
+	"schemaVersion": 1,
+	"id": "function.market-services-relay-receipt",
+	"uid": "u_wjz25kkfl5",
+	"kind": "function",
+	"title": "relayReceipt",
+	"responsibility": "Encode delivered ciphertext receipts and verify the recipient signature.",
+	"responsibilityOrigin": "declared",
+	"status": "active",
+	"owns": {
+		"source": [
+			"src/utils/market-services/relayReceipt.ts",
+			"src/utils/market-services/relayReceipt.types.ts"
+		],
+		"symbols": ["relayReceipt", "verifyRelayReceipt", "RelayReceipt", "SignedRelayReceipt"]
+	},
+	"contract": {
+		"origin": "declared",
+		"inputs": [
+			{
+				"name": "relayReceipt.receipt",
+				"type": "RelayReceipt",
+				"required": true
+			},
+			{
+				"name": "verifyRelayReceipt.receipt",
+				"type": "SignedRelayReceipt",
+				"required": true
+			},
+			{
+				"name": "verifyRelayReceipt.expectedKey",
+				"type": "string",
+				"required": true
+			},
+			{
+				"name": "verifyRelayReceipt.now",
+				"type": "number",
+				"required": false,
+				"default": null,
+				"description": "Omits an explicit clock override and uses the current time."
+			}
+		],
+		"outputs": [
+			{
+				"name": "relayReceipt",
+				"type": "Bytes"
+			},
+			{
+				"name": "verifyRelayReceipt",
+				"type": "void"
+			}
+		],
+		"errors": [
+			{
+				"name": "TypeError",
+				"type": "thrown",
+				"description": "Invalid receipt shape, validity window, recipient key or signature."
+			}
+		],
+		"errorStatus": "declared",
+		"operations": [
+			{
+				"name": "relayReceipt",
+				"inputs": [
+					{
+						"name": "relayReceipt.receipt",
+						"type": "RelayReceipt",
+						"required": true
+					}
+				],
+				"outputs": [
+					{
+						"name": "relayReceipt",
+						"type": "Bytes"
+					}
+				],
+				"errors": [
+					{
+						"name": "TypeError",
+						"type": "thrown",
+						"description": "Invalid receipt shape, validity window, recipient key or signature."
+					}
+				],
+				"errorStatus": "declared"
+			},
+			{
+				"name": "verifyRelayReceipt",
+				"inputs": [
+					{
+						"name": "verifyRelayReceipt.receipt",
+						"type": "SignedRelayReceipt",
+						"required": true
+					},
+					{
+						"name": "verifyRelayReceipt.expectedKey",
+						"type": "string",
+						"required": true
+					},
+					{
+						"name": "verifyRelayReceipt.now",
+						"type": "number",
+						"required": false,
+						"default": null,
+						"description": "Omits an explicit clock override and uses the current time."
+					}
+				],
+				"outputs": [
+					{
+						"name": "verifyRelayReceipt",
+						"type": "void"
+					}
+				],
+				"errors": [
+					{
+						"name": "TypeError",
+						"type": "thrown",
+						"description": "Invalid receipt shape, validity window, recipient key or signature."
+					}
+				],
+				"errorStatus": "declared"
+			}
+		],
+		"initialization": []
+	},
+	"dependencies": [],
+	"runtime": {
+		"kind": "module",
+		"entry": "src/utils/market-services/relayReceipt.ts",
+		"targets": [
+			{
+				"kind": "module",
+				"entry": "src/utils/market-services/relayReceipt.ts"
+			}
+		]
+	},
+	"scenarios": [],
+	"budgets": {
+		"size": "frozen",
+		"complexity": "frozen",
+		"performance": []
+	}
+}

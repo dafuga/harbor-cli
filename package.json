@@ -4,6 +4,9 @@
   "description": "Harbor command line tools for service agents and market operators.",
   "license": "BSD-3-Clause",
   "type": "module",
+  "harness": {
+    "kind": "lib"
+  },
   "bin": {
     "harbor-cli": "lib/index.js",
     "harbor": "lib/index.js"
@@ -22,7 +25,10 @@
     "test": "node --test lib/**/*.test.js",
     "test:msig:e2e": "node lib/lib/harbor-msig.e2e.js",
     "pack:release": "npm run compile && npm pack",
-    "prepublishOnly": "npm run compile"
+    "prepublishOnly": "npm run compile",
+    "test:modules": "vitest run test/utils/market-services --maxWorkers 1",
+    "audit": "harness units check && bun scripts/harness-audit.ts",
+    "verify": "npm run check && npm run compile && npm test && npm run test:modules && npm run audit"
   },
   "engines": {
     "node": ">=20.18.0"
@@ -45,6 +51,7 @@
     "@types/pako": "^2.0.4",
     "@types/qrcode-terminal": "^0.12.2",
     "@types/sodium-native": "^2.3.9",
-    "typescript": "^5.4.5"
+    "typescript": "^5.4.5",
+    "vitest": "3.2.7"
   }
 }

@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 1,
+  "setup": [
+    {"command": "npm ci --no-fund --no-audit", "timeoutMs": 60000},
+    {"command": "npm run check && npm run compile && npm test && npm run audit", "timeoutMs": 60000}
+  ],
+  "link": [],
+  "outputs": ["node_modules/"],
+  "tools": [
+    {"id": "node", "command": "node --version"},
+    {"id": "bun", "command": "bun --version"}
+  ],
+  "runners": {"vitest": "npm exec -- vitest run {target} --maxWorkers 1"},
+  "timeouts": {"test": 30000}
+}

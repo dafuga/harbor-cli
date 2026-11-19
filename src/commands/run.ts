@@ -5,6 +5,7 @@ import {buildRunPlan, HarborRunOptions, HarborRunPlan, runServiceForeground, sup
 import {serviceHost, type ServiceHostOptions} from '../lib/host-policy.js'
 import {marketLimits} from '../lib/resource-limits.js'
 import {clientFor} from '../lib/tx.js'
+import {marketSupervision} from '../utils/market-services/marketSupervision.js'
 import {addMarketSelectionOptions, buildAgentOpportunityReport, type AgentOpportunityReport} from './market.js'
 
 export function addRuntimeOptions(command: Command): Command {
@@ -53,12 +54,6 @@ interface AutoRunOptions extends HarborRunOptions, ServiceHostOptions {
   expectChainId?: string
 }
 
-interface AutoService {
-  name: string
-  controller: AbortController
-  stopped: Promise<void>
-}
-
 async function selectService(options: AutoRunOptions): Promise<AgentOpportunityReport> {
   return buildAgentOpportunityReport({
     ...options, best: true,
@@ -96,69 +91,21 @@ async function runAuto(options: AutoRunOptions): Promise<void> {
   const expected = options.expectChainId
   const shutdown = new AbortController()
   const stop = () => shutdown.abort()
-  const failures = new Map<string, number>()
-  let current: AutoService | undefined
-  function report(message: object) {
-    console[options.json ? 'log' : 'error'](JSON.stringify(message))
-  }
-  async function stopCurrent(): Promise<void> {
-    const service = current
-    if (!service) return
-    service.controller.abort()
-    await service.stopped
-    current = undefined
-  }
-  function retryLater(name: string, error: unknown) {
-    failures.set(name, Date.now() + Math.max(seconds * 2000, 15_000))
-    report({event: 'service-unavailable', service: name, reason: (error as Error).message})
-  }
-
   process.on('SIGINT', stop)
   process.on('SIGTERM', stop)
   try {
-    while (!shutdown.signal.aborted) {
-      try {
+    await marketSupervision({
+      async inspect() {
         const chain = await clientFor(options.url).v1.chain.get_info()
         if (String(chain.chain_id) !== expected) throw new Error('RPC endpoint does not match --expect-chain-id')
-        const market = await selectService(options)
-        const best = market.opportunities.find(({name, status}) =>
-          status === 'open' && (failures.get(name) ?? 0) <= Date.now())
-        if (best?.name !== current?.name) await stopCurrent()
-        if (!best) report({event: 'no-eligible-service'})
-        if (!current && best && !shutdown.signal.aborted) {
-          try {
-            const plan = await autoPlan(best.name, options)
-            if (shutdown.signal.aborted) break
-            const controller = new AbortController()
-            const stopped = superviseRuntime(plan, {
-              mirror: 'stderr', kernelLimits: false, signal: controller.signal,
-              onReady: () => report({event: 'service-ready', service: best.name}),
-            })
-              .then(() => {
-                if (!controller.signal.aborted) retryLater(best.name, new Error('service exited'))
-              })
-              .catch((error: Error) => {
-                if (!controller.signal.aborted) retryLater(best.name, error)
-              })
-              .finally(() => {
-                if (current?.controller === controller) current = undefined
-              })
-            current = {name: best.name, controller, stopped}
-            report({event: 'service-selected', service: best.name, estimate: best.estimatedHourlyReward, reason: best.reason})
-          } catch (error) {
-            retryLater(best.name, error)
-          }
-        }
-      } catch (error) {
-        await stopCurrent()
-        report({event: 'market-unavailable', reason: (error as Error).message})
-      }
-      await delay(seconds * 1000, undefined, {signal: shutdown.signal}).catch((error: Error) => {
-        if (!shutdown.signal.aborted) throw error
-      })
-    }
+        return (await selectService(options)).opportunities
+      },
+      prepare: (name) => autoPlan(name, options),
+      start: (plan, lifecycle) => superviseRuntime(plan, {mirror: 'stderr', kernelLimits: false, ...lifecycle}),
+      wait: (signal) => delay(seconds * 1000, undefined, {signal}),
+      report: (message) => console[options.json ? 'log' : 'error'](JSON.stringify(message)),
+    }, {signal: shutdown.signal, cooldownMs: Math.max(seconds * 2000, 15_000)})
   } finally {
-    await stopCurrent()
     process.off('SIGINT', stop)
     process.off('SIGTERM', stop)
   }
