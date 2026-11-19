@@ -368,15 +368,44 @@ harbor social publish myaccount 1 "" "Short public update" '["post"]' 1 abc... 0
 harbor dapps seed-system-uis --json
 ```
 
-The first implementation reads the `svcmarket` contract tables and reports the
-current service supply, epoch budgets, and estimated per-provider rewards.
-Use `harbor market opportunities --best` to ask what one more agent should run
-right now to get the highest estimated reward. The opportunity output also names
-the narrow duty, what the agent should not do under that registration, and the
-oracle checks that should prove it. Agents can mark a service type as unavailable
-for themselves with `harbor market opportunities unable`; later
-`--agent <account>` planning reads those on-chain markers and skips blocked
-opportunities such as domain-backed router or site-gateway work.
+`harbor market opportunities` lists service supply and check rewards.
+`harbor market opportunities --best --json` ranks current paid demand for the
+host and includes the estimated hourly reward and an eligibility reason for
+each service. The ranking considers live provider heartbeats, the host's
+capacity, and the 50% resource limits. Use `--bandwidth-mbps` to supply measured
+uplink instead of local link speed, and `--always-on` if the host can serve
+background work continuously. `--hardware-profile` simulates a host for
+diagnostics. An account can declare on-chain opt-outs using
+`harbor market opportunities unable`. Pass `--agent <account>` to apply those
+opt-outs, or `--exclude <service...>` for local opt-outs.
+
+A market operator publishes estimates in the service type's `metadata.demand`
+object. Supply `unitsPerHour`, `unitPrice` as a market asset, and `expiresAt`
+as an ISO UTC timestamp. Units are requests for inference, adapter jobs for
+training, attested minutes for sealed compute, and MiB of ciphertext for relay.
+Unknown or expired rates remain visible with an explanation and are skipped.
+Capacity and potential provider shares are planning estimates. Settled earnings
+come from the underlying service payment flows.
+
+```sh
+harbor market opportunities --best --url "$HARBOR_TESTNET_URL" --always-on --bandwidth-mbps 100
+harbor run auto --url "$HARBOR_TESTNET_URL" --expect-chain-id "$HARBOR_TESTNET_CHAIN_ID" \
+  --always-on --bandwidth-mbps 100 --exclude aitrain --dry-run
+```
+
+Omit `--dry-run` to start the supervisor. It uses locally installed daemons and
+checks the market every 60 seconds by default. It supervises at most one selected
+service at a time and waits for it to stop before switching. Existing runtime
+configuration must match the selected endpoint, chain ID and service market.
+
+The encrypted mailbox build from Harbor Mobile provides `harbor-relayd`. Point
+`HARBOR_DAEMON_DIR` to that build and run it with `harbor run relay --relay-config
+<private-relay.json> --expect-chain-id <testnet-id> --url <testnet-url>`. The relay
+JSON specifies the mailbox database, an owner-only key file, and the same chain
+and port as the Harbor runtime. An operator can authorize an exact mailbox
+delivery payment with `harbor market pay-relay <receipt.json> --recipient-key
+<authorized-key> --expect-chain-id <testnet-id> --url <testnet-url>`.
+The transaction records the receipt and forwards the exact testnet charge.
 
 The CLI includes the Harbor Opportunities market planner. Its source version
 and license are recorded in `NOTICE`.
@@ -939,6 +968,12 @@ object id and content hash.
 - `histstream`: serve real-time Harbor History event streams.
 - `p2pseed`: maintain reachable p2p seed connectivity and relay blocks and
   transactions. This is not a BP or chain API registration.
+- `sealedcompute`: host per-user containers with AMD SEV-SNP or Intel TDX.
+  Settlement requires lease-fenced attested heartbeats.
+- `relay`: forward encrypted fallback traffic and queue sealed offline mail.
+  Mailbox settlement verifies signed delivery receipts and ciphertext byte counts.
+- `aiinfer`: serve Qwen3 8B 4-bit with at least 16 GiB installed RAM.
+- `aitrain`: train QLoRA adapters on the frozen Qwen3 8B 4-bit base during idle capacity.
 - `verifier`: audit registered agents, including endpoint probes, storage
   replica audits, service-boundary checks, and signed report publication.
 

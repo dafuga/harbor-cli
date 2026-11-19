@@ -17,6 +17,7 @@ export interface HarborRunOptions extends Omit<ResolveArtifactOptions, 'service'
     genesisJson?: string;
     idleOnly?: boolean;
     expectChainId?: string;
+    relayConfig?: string;
     localInstalledOnly?: boolean;
 }
 export interface HarborRunPlan {

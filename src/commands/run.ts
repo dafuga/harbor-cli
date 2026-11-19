@@ -18,6 +18,7 @@ export function addRuntimeOptions(command: Command): Command {
     .option('--genesis-json <path>', 'nodeos genesis file for a new chain data directory')
     .option('--data-dir <path>', 'runtime data directory')
     .option('--port <port>', 'service listen port')
+    .option('--relay-config <path>', 'private relay daemon JSON configuration')
     .option('--force-install', 'reinstall or rebuild the service binary', false)
     .option('--cpu-percent <percent>', 'maximum share of available logical CPUs per service (default 40)')
     .option('--memory-percent <percent>', 'maximum share of visible physical memory per service (default 40)')
@@ -180,6 +181,11 @@ export function createRunCommand(): Command {
       }
       const service = normalizeServiceName(serviceName)
       if (options.hardwareProfile) throw new Error('--hardware-profile is only supported by run auto --dry-run')
+      if (!options.dryRun && options.relayConfig && service.name === 'relay') {
+        if (!options.expectChainId || String((await clientFor(options.url).v1.chain.get_info()).chain_id) !== options.expectChainId) {
+          throw new Error('relay runtime RPC endpoint does not match --expect-chain-id')
+        }
+      }
       if (service.name === 'sealedcompute' && !options.dryRun) {
         const host = await serviceHost(options.dataDir ?? '.', {})
         if (!host.confidentialVm) throw new Error('sealedcompute requires SEV-SNP or TDX host support')

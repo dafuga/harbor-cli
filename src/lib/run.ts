@@ -34,6 +34,7 @@ export interface HarborRunOptions extends Omit<ResolveArtifactOptions, 'service'
   genesisJson?: string
   idleOnly?: boolean
   expectChainId?: string
+  relayConfig?: string
   localInstalledOnly?: boolean
 }
 
@@ -321,6 +322,11 @@ export async function buildRunPlan(service: ServiceRuntime, options: HarborRunOp
     }
   }
   const binary = artifact?.binary ?? prospectiveBinary
+  const command = [binary, '--config', config]
+  if (service.name === 'relay' && options.relayConfig) {
+    if (!options.expectChainId) throw new Error('--relay-config requires --expect-chain-id')
+    command.push('--relay-config', path.resolve(options.relayConfig), '--port', String(runtime.port), '--chain-id', options.expectChainId)
+  }
   return {
     service: service.name,
     daemon: service.daemon,
@@ -332,7 +338,7 @@ export async function buildRunPlan(service: ServiceRuntime, options: HarborRunOp
     config,
     data_dir: runtime.dataDir,
     port: runtime.port,
-    command: [binary, '--config', config],
+    command,
     log: path.resolve(harborHome(), 'logs', `${service.name}.log`),
     usage_file: path.resolve(harborHome(), 'logs', `${service.name}.usage.json`),
     limits,
