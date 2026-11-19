@@ -5,6 +5,7 @@ import fs from 'node:fs/promises'
 import fssync from 'node:fs'
 import net from 'node:net'
 import path from 'node:path'
+import {sealedGuestPreflight} from '../utils/market-services/sealedGuestPreflight.js'
 import {artifactBinary, defaultRuntimeConfigPath, defaultRuntimeDataDir, isNodeRuntime, ResolveArtifactOptions, resolveArtifact, ResolvedArtifact, ServiceRuntime} from './artifacts.js'
 import {harborHome} from './config.js'
 import {verifyQwenGguf} from './gguf.js'
@@ -217,6 +218,12 @@ async function runtimeConfig(config: string, service: ServiceRuntime, options: H
     existing = parseConfig(await fs.readFile(config, 'utf8'))
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+  }
+  if (service.name === 'sealedcompute' && !options.dryRun) {
+    await sealedGuestPreflight({
+      platform: process.platform, arch: process.arch, hasConfig: existing !== undefined,
+      canAccess: (device) => fs.access(device).then(() => true, () => false),
+    })
   }
   if (existing && options.expectChainId) {
     const endpoint = existing.get('chain.http_endpoint')

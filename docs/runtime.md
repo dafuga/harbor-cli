@@ -49,6 +49,12 @@ Supply the intended chain's genesis for a fresh peer with `--genesis-json`.
 The node exposes loopback RPC on 8888 by default. Configure P2P listeners and
 peers in `config.ini`. Readiness uses `/v1/chain/get_info`.
 
+Run `harbor run sealedcompute --config sealed.toml` inside the configured
+Linux x64 SEV-SNP or TDX guest. The CLI checks for the config file and a guest
+attestation interface. The provider validates the format-specific quote helper,
+attestation evidence, and lease. `--dry-run` prints the plan on supported CLI
+platforms without requiring the guest or its config.
+
 ## Windows and Electron
 
 Use WSL2 so Windows shares the Linux daemon and systemd implementation. Install
