@@ -16,6 +16,9 @@ export interface HarborRunOptions extends Omit<ResolveArtifactOptions, 'service'
     modelProfile?: string;
     genesisJson?: string;
     idleOnly?: boolean;
+    expectChainId?: string;
+    relayConfig?: string;
+    localInstalledOnly?: boolean;
 }
 export interface HarborRunPlan {
     service: string;
@@ -48,6 +51,7 @@ export declare function renderRuntimeConfig(input: {
     url?: string;
     marketContract?: string;
     storageContract?: string;
+    expectChainId?: string;
 } & BackendOptions): string;
 export declare function buildRunPlan(service: ServiceRuntime, options: HarborRunOptions): Promise<HarborRunPlan>;
 export declare function serviceHealthy(port: number, service: string): Promise<boolean>;
@@ -56,5 +60,7 @@ export declare function runServiceForeground(service: ServiceRuntime, options: H
 export declare function superviseRuntime(plan: HarborRunPlan, options: {
     mirror: 'both' | 'stderr';
     kernelLimits: boolean;
+    signal?: AbortSignal;
+    onReady?: () => void;
 }): Promise<void>;
 export {};

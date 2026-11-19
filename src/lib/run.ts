@@ -4,15 +4,15 @@ import {once} from 'node:events'
 import fs from 'node:fs/promises'
 import fssync from 'node:fs'
 import net from 'node:net'
-import os from 'node:os'
 import path from 'node:path'
 import {artifactBinary, defaultRuntimeConfigPath, defaultRuntimeDataDir, isNodeRuntime, ResolveArtifactOptions, resolveArtifact, ResolvedArtifact, ServiceRuntime} from './artifacts.js'
 import {harborHome} from './config.js'
 import {verifyQwenGguf} from './gguf.js'
-import {checkDiskFloor, hostPolicy, hostState} from './host-policy.js'
+import {checkDiskFloor, hostMemoryBytes, hostPolicy, hostState} from './host-policy.js'
 import {createKvGateway} from './kv-cache.js'
 import {isLocalHttp, llamaCacheDirectory, LOCAL_BACKEND_KEY_ENV, localModel, ManagedBackend, ManagedBackendOptions, planManagedBackend} from './local-model.js'
 import {canConnect} from './ports.js'
+import {RELAY_MEMORY_FLOOR} from './opportunities.js'
 import {configuredLimits, LimitOptions, ResourceLimits, signalGroup, watchProcessGroups} from './resource-limits.js'
 import {releaseAsset, runtimeTarget} from './runtime-host.js'
 
@@ -32,6 +32,9 @@ export interface HarborRunOptions extends Omit<ResolveArtifactOptions, 'service'
   modelProfile?: string
   genesisJson?: string
   idleOnly?: boolean
+  expectChainId?: string
+  relayConfig?: string
+  localInstalledOnly?: boolean
 }
 
 function nodeConfig(options: HarborRunOptions) {
@@ -105,6 +108,8 @@ function serviceProviders(basePort: number): string {
     ['aitrain', 18],
     ['airouter', 19],
     ['keycustody', 20],
+    ['sealedcompute', 22],
+    ['relay', 23],
   ] as const
   return services.map(([service, offset]) => {
     const endpoint = service === 'p2pseed' ? '127.0.0.1:9876' : `http://127.0.0.1:${basePort + offset}`
@@ -128,12 +133,13 @@ export function renderRuntimeConfig(input: {
   url?: string
   marketContract?: string
   storageContract?: string
+  expectChainId?: string
 } & BackendOptions): string {
   const historyRepo = input.historyRepo ?? path.resolve(process.cwd(), '..', 'harbor-history')
   return `[chain]
 http_endpoint = ${q(input.url ?? process.env.HARBOR_API_URL ?? 'http://127.0.0.1:8888')}
 p2p_endpoint = "127.0.0.1:9876"
-chain_id = ""
+chain_id = ${q(input.expectChainId ?? '')}
 svcmarket_contract = ${q(input.marketContract ?? process.env.HARBOR_MARKET_CONTRACT ?? 'svcmarket')}
 storage_contract = ${q(input.storageContract ?? process.env.HARBOR_STORAGE_CONTRACT ?? 'harborstore')}
 ai_contract = ${q(process.env.HARBOR_AI_CONTRACT ?? 'harborai')}
@@ -212,6 +218,13 @@ async function runtimeConfig(config: string, service: ServiceRuntime, options: H
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
   }
+  if (existing && options.expectChainId) {
+    const endpoint = existing.get('chain.http_endpoint')
+    if (endpoint !== options.url || existing.get('chain.chain_id') !== options.expectChainId ||
+        existing.get('chain.svcmarket_contract') !== options.marketContract) {
+      throw new Error('runtime config must use the same chain ID, endpoint, and market contract as automatic selection')
+    }
+  }
   const basePort = Number(existing?.get('services.base_port') ?? (existing || options.port === undefined ? 9100 : Number(options.port) - service.portOffset))
   const port = basePort + service.portOffset
   if (!Number.isInteger(basePort) || basePort < 1 || basePort > 65535 - service.portOffset) {
@@ -225,7 +238,7 @@ async function runtimeConfig(config: string, service: ServiceRuntime, options: H
   const configuredBackend = (Object.keys(BACKEND_FIELDS) as Array<keyof BackendOptions>)
     .some((key) => options[key] !== undefined || process.env[BACKEND_FIELDS[key][1]] !== undefined)
   const profileName = options.modelProfile ?? (!existing && service.name === 'aiinfer' && (!configuredBackend || options.ollama || options.llamaServer) ? 'auto' : undefined)
-  const modelProfile = profileName ? localModel(profileName, os.totalmem(), limits.memory_bytes) : undefined
+  const modelProfile = profileName ? localModel(profileName, hostMemoryBytes(), limits.memory_bytes) : undefined
   const profileDefaults: BackendOptions = modelProfile ? {
     backendEndpoint: modelProfile.backend_endpoint,
     backendProtocol: 'openai',
@@ -257,8 +270,8 @@ async function runtimeConfig(config: string, service: ServiceRuntime, options: H
   if (backend.backendProtocol === 'openai' && (!backend.backendEndpoint || !backend.backendModel || !backend.backendApiKeyEnv)) {
     throw new Error('the OpenAI-compatible backend requires an endpoint, model, and API key environment variable name')
   }
-  const {url, marketContract, storageContract} = options
-  return {port, dataDir, backend, modelProfile, generated: existing ? undefined : renderRuntimeConfig({dataDir, basePort, url, marketContract, storageContract, ...backend})}
+  const {url, marketContract, storageContract, expectChainId} = options
+  return {port, dataDir, backend, modelProfile, generated: existing ? undefined : renderRuntimeConfig({dataDir, basePort, url, marketContract, storageContract, expectChainId, ...backend})}
 }
 
 export async function buildRunPlan(service: ServiceRuntime, options: HarborRunOptions): Promise<HarborRunPlan> {
@@ -308,6 +321,11 @@ export async function buildRunPlan(service: ServiceRuntime, options: HarborRunOp
     }
   }
   const binary = artifact?.binary ?? prospectiveBinary
+  const command = [binary, '--config', config]
+  if (service.name === 'relay' && options.relayConfig) {
+    if (!options.expectChainId) throw new Error('--relay-config requires --expect-chain-id')
+    command.push('--relay-config', path.resolve(options.relayConfig), '--port', String(runtime.port), '--chain-id', options.expectChainId)
+  }
   return {
     service: service.name,
     daemon: service.daemon,
@@ -319,7 +337,7 @@ export async function buildRunPlan(service: ServiceRuntime, options: HarborRunOp
     config,
     data_dir: runtime.dataDir,
     port: runtime.port,
-    command: [binary, '--config', config],
+    command,
     log: path.resolve(harborHome(), 'logs', `${service.name}.log`),
     usage_file: path.resolve(harborHome(), 'logs', `${service.name}.usage.json`),
     limits,
@@ -429,8 +447,12 @@ async function waitForBackend(backend: BackendEngine, stopped: () => boolean): P
   throw new Error(`${backend.engine} did not become ready at ${backend.readiness}`)
 }
 
-export async function superviseRuntime(plan: HarborRunPlan, options: {mirror: 'both' | 'stderr'; kernelLimits: boolean}): Promise<void> {
-  let policy = hostPolicy(await hostState(), Boolean(plan.idle_only))
+export async function superviseRuntime(plan: HarborRunPlan, options: {
+  mirror: 'both' | 'stderr'; kernelLimits: boolean; signal?: AbortSignal; onReady?: () => void
+}): Promise<void> {
+  if (options.signal?.aborted) return
+  const memoryFloor = plan.service === 'relay' ? RELAY_MEMORY_FLOOR : undefined
+  let policy = hostPolicy(await hostState(), Boolean(plan.idle_only), memoryFloor)
   if (policy.blocked) throw new Error(`cannot start ${plan.service}: ${policy.blocked}`)
   await Promise.all([checkDiskFloor(plan.data_dir), checkDiskFloor(path.dirname(plan.log))])
   // This header satisfies the daemon's OpenAI client for a local backend that requires no key.
@@ -539,7 +561,7 @@ export async function superviseRuntime(plan: HarborRunPlan, options: {mirror: 'b
     checking = true
     try {
       const current = await hostState()
-      const next = hostPolicy(current, Boolean(plan.idle_only))
+      const next = hostPolicy(current, Boolean(plan.idle_only), memoryFloor)
       if (stopping) return
       if (current.available_memory_bytes < 2 ** 30) await pauseForPressure()
       if (pressurePaused && !next.blocked && current.available_memory_bytes < (localModel().working_memory_gib + 1) * 2 ** 30) {
@@ -573,6 +595,8 @@ export async function superviseRuntime(plan: HarborRunPlan, options: {mirror: 'b
     })
   process.on('SIGINT', stop)
   process.on('SIGTERM', stop)
+  options.signal?.addEventListener('abort', stop, {once: true})
+  if (options.signal?.aborted) stop()
   try {
     if (backend) {
       engine = await backendEngine(backend)
@@ -590,6 +614,7 @@ export async function superviseRuntime(plan: HarborRunPlan, options: {mirror: 'b
       await waitForHealth(plan, () => Boolean(workload.result) || stopping, plan.service === 'nodeos' ? 75_000 : 10_000).catch((error: Error) => {
         if (!stopping) fail(workload.result?.error ?? error)
       })
+      if (!stopping && !workload.result) options.onReady?.()
       const exit = await workload.closed
       if (!stopping && (exit.error || exit.code !== 0)) {
         fail(exit.error ?? new Error(`${plan.service} exited with status ${exit.code ?? exit.signal}`))
@@ -610,6 +635,7 @@ export async function superviseRuntime(plan: HarborRunPlan, options: {mirror: 'b
     clearTimeout(killTimer)
     process.off('SIGINT', stop)
     process.off('SIGTERM', stop)
+    options.signal?.removeEventListener('abort', stop)
     const logClosed = log.closed ? undefined : once(log, 'close')
     log.end()
     await logClosed

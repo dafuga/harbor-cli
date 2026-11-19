@@ -1,0 +1,103 @@
+{
+	"schemaVersion": 1,
+	"id": "function.market-services-market-supervision",
+	"uid": "u_bl2btg3qjb",
+	"kind": "function",
+	"title": "marketSupervision",
+	"responsibility": "Switch and stop a single market-selected service process.",
+	"responsibilityOrigin": "declared",
+	"status": "active",
+	"owns": {
+		"source": [
+			"src/utils/market-services/marketSupervision.ts",
+			"src/utils/market-services/marketSupervision.types.ts"
+		],
+		"symbols": [
+			"marketSupervision",
+			"MarketCandidate",
+			"MarketEvent",
+			"MarketSupervisor",
+			"MarketSupervisionOptions",
+			"RunningMarketService",
+			"SupervisorState"
+		]
+	},
+	"contract": {
+		"origin": "declared",
+		"inputs": [
+			{
+				"name": "marketSupervision.supervisor",
+				"type": "MarketSupervisor<Plan>",
+				"required": true
+			},
+			{
+				"name": "marketSupervision.options",
+				"type": "MarketSupervisionOptions",
+				"required": true
+			}
+		],
+		"outputs": [
+			{
+				"name": "marketSupervision",
+				"type": "Promise<void>"
+			}
+		],
+		"errors": [
+			{
+				"name": "ExpectedCliError",
+				"type": "thrown",
+				"description": "The poll waiter may fail for reasons unrelated to operator shutdown."
+			}
+		],
+		"errorStatus": "declared",
+		"operations": [
+			{
+				"name": "marketSupervision",
+				"inputs": [
+					{
+						"name": "marketSupervision.supervisor",
+						"type": "MarketSupervisor<Plan>",
+						"required": true
+					},
+					{
+						"name": "marketSupervision.options",
+						"type": "MarketSupervisionOptions",
+						"required": true
+					}
+				],
+				"outputs": [
+					{
+						"name": "marketSupervision",
+						"type": "Promise<void>"
+					}
+				],
+				"errors": [
+					{
+						"name": "ExpectedCliError",
+						"type": "thrown",
+						"description": "The poll waiter may fail for reasons unrelated to operator shutdown."
+					}
+				],
+				"errorStatus": "declared"
+			}
+		],
+		"initialization": []
+	},
+	"dependencies": [],
+	"runtime": {
+		"kind": "module",
+		"entry": "src/utils/market-services/marketSupervision.ts",
+		"targets": [
+			{
+				"kind": "module",
+				"entry": "src/utils/market-services/marketSupervision.ts"
+			}
+		]
+	},
+	"scenarios": [],
+	"budgets": {
+		"size": "frozen",
+		"complexity": "frozen",
+		"performance": []
+	}
+}

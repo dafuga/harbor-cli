@@ -11,6 +11,7 @@ export interface AuthOptions {
   key?: string
   json?: boolean
   expiration?: string
+  expectChainId?: string
 }
 
 export interface PushActionInput extends AuthOptions {
@@ -144,6 +145,14 @@ async function signAndTransact(options: AuthOptions, actions: Action[] | Array<R
   const url = apiUrl(options.url)
   const client = clientFor(url)
   const info = await client.v1.chain.get_info()
+  if (options.expectChainId !== undefined) {
+    if (!/^[0-9a-fA-F]{64}$/.test(options.expectChainId)) {
+      throw new Error('expected chain ID must be a 64-digit hexadecimal string')
+    }
+    if (String(info.chain_id) !== options.expectChainId.toLowerCase()) {
+      throw new Error('RPC endpoint does not match the expected chain ID')
+    }
+  }
   const auth = permissionLevel(options)
   const walletPlugin = await walletPluginFor(options.key, auth.actor, url, review)
   const session = new Session({

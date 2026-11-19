@@ -12,6 +12,7 @@ export interface ResourceLimits {
 }
 export declare function resourceLimits(options?: LimitOptions): ResourceLimits;
 export declare function configuredLimits(overrides?: LimitOptions): Promise<ResourceLimits>;
+export declare function marketLimits(overrides?: LimitOptions): Promise<ResourceLimits>;
 export declare function saveLimits(overrides: LimitOptions): Promise<ResourceLimits>;
 export declare function signalGroup(pid: number, signal: NodeJS.Signals): void;
 export declare function watchProcessGroups(groups: () => readonly number[], limits: ResourceLimits, onError: (error: Error) => void, policy?: () => {

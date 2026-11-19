@@ -37,6 +37,7 @@ export interface ResolveArtifactOptions {
     artifactHash?: string;
     sha256?: string;
     forceInstall?: boolean;
+    localInstalledOnly?: boolean;
     url?: string;
     marketContract?: string;
     storageContract?: string;

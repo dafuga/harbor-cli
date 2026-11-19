@@ -1,0 +1,111 @@
+{
+	"schemaVersion": 1,
+	"id": "function.market-services-relay-payment",
+	"uid": "u_q4zbame5nv",
+	"kind": "function",
+	"title": "relayPayment",
+	"responsibility": "Prepare and submit a payer-authorized relay receipt and transfer.",
+	"responsibilityOrigin": "declared",
+	"status": "active",
+	"owns": {
+		"source": [
+			"src/utils/market-services/relayPayment.ts",
+			"src/utils/market-services/relayPayment.types.ts"
+		],
+		"symbols": ["relayPayment", "RelayPaymentOptions"]
+	},
+	"contract": {
+		"origin": "declared",
+		"inputs": [
+			{
+				"name": "relayPayment.receipt",
+				"type": "SignedRelayReceipt",
+				"required": true
+			},
+			{
+				"name": "relayPayment.options",
+				"type": "RelayPaymentOptions",
+				"required": true
+			}
+		],
+		"outputs": [
+			{
+				"name": "relayPayment",
+				"type": "unknown"
+			}
+		],
+		"errors": [
+			{
+				"name": "TypeError",
+				"type": "thrown",
+				"description": "The expected chain, payer, authorized recipient or contract does not match the signed receipt."
+			},
+			{
+				"name": "PaymentRejected",
+				"type": "thrown",
+				"description": "The wallet, RPC or settlement contract may reject a reviewed payment."
+			}
+		],
+		"errorStatus": "declared",
+		"operations": [
+			{
+				"name": "relayPayment",
+				"inputs": [
+					{
+						"name": "relayPayment.receipt",
+						"type": "SignedRelayReceipt",
+						"required": true
+					},
+					{
+						"name": "relayPayment.options",
+						"type": "RelayPaymentOptions",
+						"required": true
+					}
+				],
+				"outputs": [
+					{
+						"name": "relayPayment",
+						"type": "unknown"
+					}
+				],
+				"errors": [
+					{
+						"name": "TypeError",
+						"type": "thrown",
+						"description": "The expected chain, payer, authorized recipient or contract does not match the signed receipt."
+					},
+					{
+						"name": "PaymentRejected",
+						"type": "thrown",
+						"description": "The wallet, RPC or settlement contract may reject a reviewed payment."
+					}
+				],
+				"errorStatus": "declared"
+			}
+		],
+		"initialization": []
+	},
+	"dependencies": [
+		{
+			"unit": "function.market-services-relay-receipt",
+			"via": "import",
+			"origin": "derived"
+		}
+	],
+	"runtime": {
+		"kind": "module",
+		"entry": "src/utils/market-services/relayPayment.ts",
+		"targets": [
+			{
+				"kind": "module",
+				"entry": "src/utils/market-services/relayPayment.ts"
+			}
+		]
+	},
+	"scenarios": [],
+	"budgets": {
+		"size": "frozen",
+		"complexity": "frozen",
+		"performance": []
+	}
+}

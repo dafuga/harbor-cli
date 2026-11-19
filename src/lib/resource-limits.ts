@@ -1,11 +1,11 @@
 import {execFile} from 'node:child_process'
 import {randomUUID} from 'node:crypto'
 import fs from 'node:fs/promises'
-import os from 'node:os'
 import path from 'node:path'
 import {performance} from 'node:perf_hooks'
 import {promisify} from 'node:util'
 import {harborHome} from './config.js'
+import {hostCpuCores, hostMemoryBytes} from './host-policy.js'
 
 const exec = promisify(execFile)
 const SAMPLE_MS = 500
@@ -39,8 +39,8 @@ export function resourceLimits(options: LimitOptions = {}): ResourceLimits {
     cpu_percent,
     memory_percent,
     gpu_percent: percent(options.gpuPercent, '--gpu-percent', 0),
-    cpu_cores: os.availableParallelism() * cpu_percent / 100,
-    memory_bytes: Math.floor(os.totalmem() * memory_percent / 100),
+    cpu_cores: hostCpuCores() * cpu_percent / 100,
+    memory_bytes: Math.floor(hostMemoryBytes() * memory_percent / 100),
   }
 }
 
@@ -48,17 +48,30 @@ function limitsPath(): string {
   return path.resolve(harborHome(), 'limits.json')
 }
 
-export async function configuredLimits(overrides: LimitOptions = {}): Promise<ResourceLimits> {
-  let defaults: LimitOptions = {}
+async function readLimits(): Promise<LimitOptions> {
   try {
-    defaults = JSON.parse(await fs.readFile(limitsPath(), 'utf8')) as LimitOptions
+    return JSON.parse(await fs.readFile(limitsPath(), 'utf8')) as LimitOptions
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+    return {}
   }
+}
+
+export async function configuredLimits(overrides: LimitOptions = {}): Promise<ResourceLimits> {
+  const defaults = await readLimits()
   return resourceLimits({
     cpuPercent: overrides.cpuPercent ?? defaults.cpuPercent,
     gpuPercent: overrides.gpuPercent ?? defaults.gpuPercent,
     memoryPercent: overrides.memoryPercent ?? defaults.memoryPercent,
+  })
+}
+
+export async function marketLimits(overrides: LimitOptions = {}): Promise<ResourceLimits> {
+  const defaults = await readLimits()
+  return resourceLimits({
+    cpuPercent: Math.min(50, percent(overrides.cpuPercent ?? defaults.cpuPercent ?? 50, '--cpu-percent')),
+    gpuPercent: Math.min(50, percent(overrides.gpuPercent ?? defaults.gpuPercent ?? 50, '--gpu-percent', 0)),
+    memoryPercent: Math.min(50, percent(overrides.memoryPercent ?? defaults.memoryPercent ?? 50, '--memory-percent')),
   })
 }
 

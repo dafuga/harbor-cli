@@ -1,3 +1,10 @@
+import {getTableRows as readRows} from './tx.js'
+import {demandRanking, liveProviderRows} from '../utils/market-services/demandRanking.js'
+import type {OpportunitySelection} from '../utils/market-services/demandRanking.types.js'
+
+export type {OpportunitySelection} from '../utils/market-services/demandRanking.types.js'
+export {RELAY_MEMORY_FLOOR} from '../utils/market-services/serviceEligibility.js'
+
 export interface TableRowsResponse<T> {
   rows: T[]
   more: boolean | string
@@ -19,6 +26,7 @@ export interface HarborServiceType {
   min_oracle_stake: string
   min_oracle_reports: number
   min_check_window_sec: number
+  metadata?: string
 }
 
 export interface HarborService {
@@ -45,9 +53,15 @@ export interface MarketOptions {
   contract: string
 }
 
+interface ServiceTtl {
+  service_type: number | string
+  ttl_sec: number
+}
+
 export interface MarketSnapshot {
   types: HarborServiceType[]
   services: HarborService[]
+  ttls?: ServiceTtl[]
   state?: HarborState
 }
 
@@ -63,6 +77,13 @@ export interface Opportunity {
   estimatedProviderRewardAmount: number
   baseProviderReward: string
   status: string
+  reason?: string
+  demandUnitsPerHour?: number
+  unitPrice?: string
+  unit?: string
+  capacityUnitsPerHour?: number
+  estimatedHourlyReward?: string
+  hourlyRewardAmount?: number
 }
 
 export interface OpportunityReport {
@@ -71,7 +92,7 @@ export interface OpportunityReport {
   opportunities: PrintableOpportunity[]
 }
 
-export type PrintableOpportunity = Omit<Opportunity, 'estimatedProviderRewardAmount'>
+export type PrintableOpportunity = Omit<Opportunity, 'estimatedProviderRewardAmount' | 'hourlyRewardAmount'>
 
 interface ServiceGuidance {
   duties: string
@@ -140,6 +161,26 @@ const SERVICE_GUIDANCE: Record<string, ServiceGuidance> = {
     mustNot: 'Do not claim relayer rewards without configured route liveness.',
     oracleChecks: 'Relay liveness, packet proof sampling, route freshness.',
   },
+  aiinfer: {
+    duties: 'Serve Qwen3 8B at 4-bit quantization with at least 16 GiB installed RAM.',
+    mustNot: 'Do not claim training or routing as inference work.',
+    oracleChecks: 'Existing Harbor AI model, token accounting and settlement checks.',
+  },
+  aitrain: {
+    duties: 'Train QLoRA expert adapters on a frozen Qwen3 8B 4-bit base.',
+    mustNot: 'Do not modify the base weights.',
+    oracleChecks: 'Existing Harbor AI training submission and evaluation checks.',
+  },
+  sealedcompute: {
+    duties: 'Host sealed per-user containers on attestation-capable confidential VMs.',
+    mustNot: 'Do not claim unaudited or duplicate lease minutes.',
+    oracleChecks: 'Attestation-bound, lease-fenced minute heartbeats and watcher quorum.',
+  },
+  relay: {
+    duties: 'Forward encrypted fallback traffic and hold sealed mail for offline peers.',
+    mustNot: 'Do not claim direct traffic as relay deliveries.',
+    oracleChecks: 'Recipient-signed delivery ID, ciphertext commitment and delivered bytes.',
+  },
   verifier: {
     duties: 'Verify that registered Harbor agents perform their declared duties.',
     mustNot: 'Do not act as a price oracle or claim provider work being verified under this service.',
@@ -167,23 +208,8 @@ export async function getTableRows<T>(
   table: string,
   options: {scope?: string; limit?: number} = {}
 ): Promise<TableRowsResponse<T>> {
-  const response = await fetch(`${normalizeUrl(url)}/v1/chain/get_table_rows`, {
-    method: 'POST',
-    headers: {'content-type': 'application/json'},
-    body: JSON.stringify({
-      json: true,
-      code: contract,
-      scope: options.scope ?? contract,
-      table,
-      limit: options.limit ?? 100,
-    }),
-  })
-
-  if (!response.ok) {
-    throw new Error(`get_table_rows ${contract}::${table} failed: ${response.status}`)
-  }
-
-  return (await response.json()) as TableRowsResponse<T>
+  const page = await readRows<T>(contract, table, {url, ...options, keyType: 'i64'})
+  return {...page, next_key: page.next_key ? String(page.next_key) : undefined}
 }
 
 export function parseAssetAmount(asset: string): number {
@@ -200,23 +226,37 @@ export function isActive(value: boolean | number): boolean {
   return value === true || value === 1
 }
 
-export async function loadMarket(options: MarketOptions): Promise<MarketSnapshot> {
-  const [types, services, state] = await Promise.all([
-    getTableRows<HarborServiceType>(options.url, options.contract, 'svctypes'),
-    getTableRows<HarborService>(options.url, options.contract, 'services'),
+export async function allMarketRows<T>(options: MarketOptions, table: string, scope?: string): Promise<T[]> {
+  const rows: T[] = []
+  const cursors = new Set<string>()
+  let lowerBound: string | undefined
+  do {
+    const page = await readRows<T>(options.contract, table, {
+      url: options.url, scope, lowerBound, keyType: 'i64', limit: 500,
+    })
+    rows.push(...page.rows)
+    if (!page.more) return rows
+    const next = page.next_key ? String(page.next_key) : ''
+    if (!next || cursors.has(next)) throw new Error(`market table ${table} did not advance its pagination cursor`)
+    cursors.add(next)
+    lowerBound = next
+  } while (true)
+}
+
+export async function loadMarket(options: MarketOptions, withDemand = false): Promise<MarketSnapshot> {
+  const [types, services, state, ttls] = await Promise.all([
+    allMarketRows<HarborServiceType>(options, 'svctypes'),
+    allMarketRows<HarborService>(options, 'services'),
     getTableRows<HarborState>(options.url, options.contract, 'state'),
+    withDemand ? allMarketRows<ServiceTtl>(options, 'svcttls') : undefined,
   ])
 
-  return {
-    types: types.rows,
-    services: services.rows,
-    state: state.rows[0],
-  }
+  return {types, services, ttls, state: state.rows[0]}
 }
 
 function activeProviderCount(serviceType: HarborServiceType, services: HarborService[]): number {
   return services.filter(
-    (service) => isActive(service.active) && service.service_type === Number(serviceType.id)
+    (service) => isActive(service.active) && Number(service.service_type) === Number(serviceType.id)
   ).length
 }
 
@@ -253,6 +293,12 @@ export function buildOpportunities(types: HarborServiceType[], services: HarborS
   })
 }
 
+export function rankServiceDemand(snapshot: MarketSnapshot, selection: OpportunitySelection): Opportunity[] {
+  const now = selection.now ?? Date.now()
+  const services = liveProviderRows(snapshot, now)
+  return demandRanking(buildOpportunities(snapshot.types, services), {...snapshot, services}, {...selection, now})
+}
+
 export function bestOpportunity(opportunities: Opportunity[]): Opportunity | undefined {
   return opportunities
     .filter((opportunity) => opportunity.status === 'open')
@@ -277,7 +323,7 @@ export function bestOpportunity(opportunities: Opportunity[]): Opportunity | und
 }
 
 export function printableOpportunity(opportunity: Opportunity): PrintableOpportunity {
-  const {estimatedProviderRewardAmount: _estimatedProviderRewardAmount, ...printable} = opportunity
+  const {estimatedProviderRewardAmount: _estimatedProviderRewardAmount, hourlyRewardAmount: _hourlyRewardAmount, ...printable} = opportunity
   return printable
 }
 
@@ -297,7 +343,10 @@ export function buildOpportunityReport(snapshot: MarketSnapshot): OpportunityRep
 
 export function recommendation(opportunity: PrintableOpportunity): string {
   return [
-    `Best opportunity: run ${opportunity.name} (service type ${opportunity.id}) for an estimated ${opportunity.estimatedProviderReward} per passing check.`,
+    opportunity.estimatedHourlyReward
+      ? `Best opportunity: run ${opportunity.name} (service type ${opportunity.id}) for an estimated ${opportunity.estimatedHourlyReward} per hour.
+${opportunity.reason}`
+      : `Best opportunity: run ${opportunity.name} (service type ${opportunity.id}) for an estimated ${opportunity.estimatedProviderReward} per passing check.`,
     `Duty: ${opportunity.duties}`,
     `Do not: ${opportunity.mustNot}`,
     `Oracle checks: ${opportunity.oracleChecks}`,

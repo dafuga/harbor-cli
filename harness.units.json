@@ -1,0 +1,11 @@
+{
+  "schemaVersion": 1,
+  "workspaces": [{"name": "", "root": "."}],
+  "tests": ["test/"],
+  "global": ["package-lock.json"],
+  "ignored": [
+    "**/*.md", "specification/features/", "specification/loops/", ".gitignore",
+    "lib/", "src/commands/", "src/lib/", "src/index.ts", "scripts/", "install.sh"
+  ],
+  "references": []
+}
