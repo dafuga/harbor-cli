@@ -10,12 +10,14 @@ export declare class HarborNetwork implements Network {
     readonly models: {
         id: string;
         label: string;
+        revision: string;
     }[];
     readonly currency: {
         symbol: string;
         precision: number;
     };
     readonly identity: string;
+    readonly baseModel: string;
     constructor(config: HarborConfig, signer: AntelopeSigner, transact?: typeof pushAction);
     private chain;
     private assertChain;

@@ -1,4 +1,4 @@
-import type { Agent, AgentStatus, AuditEntry, Network, Quote, Routine, Run } from './types.js';
+import type { Agent, AgentStatus, AuditEntry, Network, Quote, Routine, Run, RunFeedback } from './types.js';
 export declare const MAX_PROMPT_BYTES = 7400;
 export declare class AgentWorker {
     readonly host: string;
@@ -24,11 +24,15 @@ export declare class AgentWorker {
             precision: number;
         };
         models: import("./types.js").Model[];
+        specialties: readonly import("./types.js").SpecialtyManifest[];
+        feedbackPolicy: string;
+        feedback: RunFeedback[];
         agents: {
             paid: number;
             reserved: number;
             id: string;
             status: AgentStatus;
+            specialtyVersion?: number;
             revision: number;
             name: string;
             instructions: string;
@@ -36,6 +40,7 @@ export declare class AgentWorker {
             perRun: number;
             total: number;
             files: string[];
+            specialty?: string;
             secrets: string[];
         }[];
         routines: Routine[];
@@ -44,6 +49,13 @@ export declare class AgentWorker {
     };
     createAgent(input: unknown): Agent;
     saveAgent(id: string | undefined, input: unknown): Agent;
+    setFeedback(id: string, input: unknown): RunFeedback | {
+        deleted: boolean;
+    };
+    private reserveFeedbackSlot;
+    clearFeedback(agentId: string): {
+        deleted: boolean;
+    };
     setStatus(id: string, status: unknown): Agent;
     private cancelQueued;
     quote(id: string, message: unknown): Promise<Quote>;

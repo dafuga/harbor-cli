@@ -1,5 +1,5 @@
 type Value = string | number | null;
-type Table = 'agents' | 'routines' | 'quotes' | 'runs';
+type Table = 'agents' | 'routines' | 'quotes' | 'runs' | 'feedback';
 export declare class AgentStore {
     private database;
     constructor(file: string);

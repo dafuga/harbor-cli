@@ -63,13 +63,16 @@ test('worker and trigger credentials are isolated, with no token in URLs or stat
     const catalog = await get('/state').then(response => response.json())
     assert.deepEqual(catalog.specialties?.map((item: {id: string}) => item.id),
       ['researcher', 'chief-of-staff', 'coder', 'harness-coder'])
-    const input = {name: 'Build reviewer', specialty: 'harness-coder', perRun: 10, total: 100, files: [], secrets: []}
+    const input = {requestId: 'a'.repeat(64), name: 'Build reviewer', specialty: 'harness-coder', perRun: 10, total: 100, files: [], secrets: []}
     assert.equal((await post('/agents', {...input, specialty: 'unknown'})).status, 400)
     assert.equal((await post('/agents', {...input, secrets: ['wallet-key']})).status, 403)
     const specialtyAgent = await post('/agents', input).then(response => response.json())
     assert.equal(specialtyAgent.specialty, 'harness-coder')
     assert.equal(specialtyAgent.specialtyVersion, 1)
     assert.equal(specialtyAgent.model, 'flagship')
+    const replayAgent = await post('/agents', input).then(response => response.json())
+    assert.equal(replayAgent.id, specialtyAgent.id)
+    assert.equal((await post('/agents', {...input, name: 'Different'})).status, 409)
     const snapshot = await get(`/state/${specialtyAgent.id}`).then(response => response.json())
     assert.equal(snapshot.routines.length, 1)
     assert.equal(snapshot.routines[0].enabled, false)
@@ -95,6 +98,11 @@ test('worker and trigger credentials are isolated, with no token in URLs or stat
     assert.equal((await post(feedbackPath, {kind: 'answer', rating: null})).status, 200)
     const updated = await get(`/state/${specialtyAgent.id}`).then(response => response.json())
     assert.deepEqual(updated.feedback.map((item: {kind: string}) => item.kind), ['task'])
+    const clearPath = '/agents/' + specialtyAgent.id + '/clear-feedback'
+    assert.equal((await post(clearPath, {}, request.token)).status, 401)
+    assert.equal((await post(clearPath, {})).status, 200)
+    const cleared = await get('/state/' + specialtyAgent.id).then(response => response.json())
+    assert.deepEqual(cleared.feedback, [])
 
   } finally {
     await new Promise<void>(resolve => server.close(() => resolve()))

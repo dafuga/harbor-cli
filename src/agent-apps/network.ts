@@ -78,9 +78,11 @@ export class HarborNetwork implements Network {
   readonly models
   readonly currency
   readonly identity
+  readonly baseModel
 
   constructor(private readonly config: HarborConfig, private readonly signer: AntelopeSigner, private readonly transact = pushAction) {
-    this.models = config.models.map(({id, label}) => ({id, label}))
+    this.models = config.models.map(({id, label, revision}) => ({id, label, revision}))
+    this.baseModel = config.models.find(model => model.kind === 'flagship')!.id
     this.currency = config.currency
     this.identity = `${config.chainId}/${config.account}`
   }
