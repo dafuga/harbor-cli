@@ -22,7 +22,7 @@ function publicRoutine(routine: StoredRoutine): Routine {
   return visible
 }
 
-function taskPrompt(agent: Agent, runId: string, prompt: string, history: Run[] = []) {
+function taskPrompt(agent: Agent, runId: string, prompt: string, history: Run[], managed: Pick<Agent, 'id' | 'name' | 'status'>[]) {
   const recentTurns = history.map(turn => ({user: turn.prompt, assistant: turn.result, tools: turn.tools}))
   const payload = {
     requestId: runId, instructions: agent.instructions,
@@ -32,6 +32,7 @@ function taskPrompt(agent: Agent, runId: string, prompt: string, history: Run[] 
       ...(agent.files.length ? [{name: 'read_file', resources: agent.files, description: 'Read a HarborStore text object by content hash'}] : []),
       ...(agent.secrets.length ? [{name: 'use_secret', resources: agent.secrets, arguments: ['message'], description: 'Sign text with a scoped HarborVault secret using HMAC-SHA-256'}] : []),
     ],
+    ...(managed.length ? {managedAgentStatus: managed} : {}),
     history: recentTurns,
     user: prompt,
   }
@@ -107,11 +108,30 @@ export class AgentWorker {
          ) visible ON visible.id = json_extract(feedback.data, '$.runId') ORDER BY feedback.id`,
         id ?? null, id ?? null,
       ),
-      agents: agents.map(agent => ({...agent, ...this.store.totals(agent.id)})),
+      agents: agents.map(agent => ({...this.executionAgent(agent), ...this.store.totals(agent.id)})),
       routines: this.store.query<StoredRoutine>(`SELECT data FROM routines ${predicate} ORDER BY rowid`, id ?? null, id ?? null).map(publicRoutine),
       runs,
       audit: this.store.query<AuditEntry>(`SELECT data FROM audit ${predicate} ORDER BY seq DESC LIMIT 200`, id ?? null, id ?? null),
     }
+  }
+
+  private executionAgent(agent: Agent): Agent {
+    if (!agent.specialty || !agent.specialtyVersion) return agent
+    const model = this.network.specialtyModel?.(agent.specialty, agent.specialtyVersion) ??
+      this.network.baseModel ?? agent.model
+    return {...agent, model}
+  }
+
+  private taskPrompt(agent: Agent, runId: string, prompt: string, history: Run[] = []) {
+    const managed = (agent.managedAgents ?? []).map(id => {
+      const {name, status} = this.agent(id)
+      return {id, name, status}
+    })
+    return taskPrompt(agent, runId, prompt, history, managed)
+  }
+
+  private modelRevision(agent: Agent) {
+    return this.network.models.find(item => item.id === agent.model)?.revision
   }
 
   createAgent(input: unknown) {
@@ -135,7 +155,7 @@ export class AgentWorker {
         )[0]
         if (replay) {
           if (replay.fingerprint !== fingerprint) throw new AgentError('Agent creation request ID already used.', 409)
-          return this.agent(replay.id)
+          return this.executionAgent(this.agent(replay.id))
         }
       }
       const existing = id ? this.agent(id) : undefined
@@ -153,6 +173,14 @@ export class AgentWorker {
       const files = permissions(data.files ?? (manifest ? [] : undefined), hash, 'HarborStore content hashes')
       const secrets = permissions(data.secrets ?? (manifest ? [] : undefined), alias, 'HarborVault secret aliases')
       if (manifest && secrets.length) throw new AgentError('This specialty does not allow HarborVault keys.', 403)
+      const managedAgents = permissions(data.managedAgents ?? existing?.managedAgents ?? [],
+        item => /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(item), 'managed agents')
+      if (managedAgents.length && manifest?.id !== 'chief-of-staff') {
+        throw new AgentError('Only Chief of Staff can read other agents’ status.', 403)
+      }
+      if (managedAgents.includes(id ?? '')) throw new AgentError('An agent cannot track itself.')
+      for (const target of managedAgents) this.agent(target)
+
       if (existing) {
         const {paid, reserved} = this.store.totals(existing.id)
         if (total < paid + reserved) throw new AgentError('Limit is below already paid and reserved spend.', 409)
@@ -164,6 +192,7 @@ export class AgentWorker {
         ...(manifest ? {specialty: manifest.id, specialtyVersion: manifest.version} : {}),
         model, status: existing?.status ?? 'active', perRun, total,
         files, secrets,
+        ...(manifest?.id === 'chief-of-staff' ? {managedAgents} : {}),
       }
       this.store.set('agents', agent)
       if (existing) this.cancelQueued(agent.id, 'Agent configuration changed.')
@@ -176,7 +205,7 @@ export class AgentWorker {
       if (replayKey) this.store.run('INSERT INTO metadata (id, value) VALUES (?, ?)',
         replayKey, JSON.stringify({id: agent.id, fingerprint}))
       this.log(existing ? 'agent_updated' : 'agent_created', {agentId: agent.id})
-      return agent
+      return this.executionAgent(agent)
     })
   }
 
@@ -248,7 +277,7 @@ export class AgentWorker {
   }
 
   async quote(id: string, message: unknown) {
-    const agent = this.agent(id)
+    const agent = this.executionAgent(this.agent(id))
     this.requireActive(agent)
     const prompt = text(message, 'Message', 4000)
     const requestId = randomUUID()
@@ -258,17 +287,19 @@ export class AgentWorker {
       ORDER BY rowid DESC LIMIT 3
     `, id).reverse()
     const available = this.available(agent)
-    const input = taskPrompt(agent, requestId, prompt, history)
+    const input = this.taskPrompt(agent, requestId, prompt, history)
     const price = await this.getPrice(agent, input, available)
     return this.store.transaction(() => {
-      const current = this.agent(id)
+      const current = this.executionAgent(this.agent(id))
       this.requireActive(current)
-      if (current.revision !== agent.revision || this.available(current) < price.maxCost) {
+      if (current.revision !== agent.revision || current.model !== agent.model || this.available(current) < price.maxCost) {
         throw new AgentError('Agent settings or available budget changed. Request a new quote.', 409)
       }
       this.store.run("DELETE FROM quotes WHERE json_extract(data, '$.expiresAt') <= ?", this.now())
       const quote: Quote = {...price, id: randomUUID(), agentId: id, revision: agent.revision, requestId,
-        prompt, expiresAt: this.now() + QUOTE_TTL}
+        prompt, expiresAt: this.now() + QUOTE_TTL,
+        ...(agent.specialty ? {model: agent.model, modelRevision: this.modelRevision(agent)} : {}),
+      }
       this.store.set('quotes', {...quote, input})
       this.log('quote_issued', {agentId: id, detail: String(price.maxCost)})
       return quote
@@ -281,9 +312,10 @@ export class AgentWorker {
       if (!quote) throw new AgentError('Quote expired. Request a new quote.', 409)
       const previous = this.store.get<Run>('runs', quote.requestId)
       if (previous) return previous
-      const agent = this.agent(quote.agentId)
+      const agent = this.executionAgent(this.agent(quote.agentId))
       this.requireActive(agent)
-      if (quote.expiresAt <= this.now() || quote.revision !== agent.revision || this.available(agent) < quote.maxCost) {
+      if (quote.expiresAt <= this.now() || quote.revision !== agent.revision || this.available(agent) < quote.maxCost ||
+          (quote.model !== undefined && (quote.model !== agent.model || quote.modelRevision !== this.modelRevision(agent)))) {
         throw new AgentError('Quote expired or limits changed. Request a new quote.', 409)
       }
       const price = {maxCost: quote.maxCost, deployment: quote.deployment}
@@ -363,10 +395,11 @@ export class AgentWorker {
       LIMIT ${MAX_QUEUED}
     `, agent.id)
     if (pending.length >= MAX_QUEUED) throw new AgentError('Agent queue is full.', 429)
+    agent = this.executionAgent(agent)
     const run: Run = {
       id, agentId: agent.id, revision: agent.revision, routineId, prompt, limit,
       ...(agent.specialty ? {specialty: agent.specialty, specialtyVersion: agent.specialtyVersion, model: agent.model,
-        modelRevision: this.network.models.find(item => item.id === agent.model)?.revision} : {}),
+        modelRevision: this.modelRevision(agent)} : {}),
       status: 'queued', reserved: 0, paid: 0, createdAt: this.now(), price: prepared?.price,
     }
     if (prepared) {
@@ -439,15 +472,16 @@ export class AgentWorker {
   }
 
   private async execute(original: Run) {
-    const agent = this.agent(original.agentId)
+    const agent = this.executionAgent(this.agent(original.agentId))
     const controller = new AbortController()
     const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(RUN_TIMEOUT)])
     const assertActive = () => {
       signal.throwIfAborted()
-      const current = this.agent(agent.id)
+      const current = this.executionAgent(this.agent(agent.id))
       const run = this.run(original.id)
       this.requireActive(current)
-      if (current.revision !== original.revision || run.status !== 'running') {
+      if (current.revision !== original.revision || run.status !== 'running' ||
+          (run.model !== undefined && (run.model !== current.model || run.modelRevision !== this.modelRevision(current)))) {
         throw new AgentError('Run authorization changed.', 409)
       }
     }
@@ -460,7 +494,7 @@ export class AgentWorker {
       assertActive()
       const prompt = original.price
         ? this.store.query<string>("SELECT json_quote(input) AS data FROM prompts WHERE id = ?", original.id)[0]
-        : taskPrompt(agent, original.id, original.prompt)
+        : this.taskPrompt(agent, original.id, original.prompt)
       if (!prompt) throw new AgentError('Authorized request payload is unavailable.', 409)
       const limit = Math.min(original.limit, this.available(agent))
       const price = original.price ?? await this.getPrice(agent, prompt, limit, signal)

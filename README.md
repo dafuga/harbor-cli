@@ -1039,6 +1039,21 @@ pinned 4-bit flagship revision, with the same AWQ or MLX format. The serving
 machine must meet the local 16 GB minimum and its resource caps. The model
 catalog binds selected deployments to configured on-chain revisions.
 
+Agent creation can select Researcher, Chief of Staff, Coder, or Harness
+Coder. Specialty defaults are versioned and schedules start paused. Chief
+of Staff can summarize status for the agent IDs explicitly selected by the
+owner. Specialty permissions never include Vault keys. Rates and Harbor
+account controls still apply to every run. Owners can record or delete
+training-consented answer and task feedback on the worker.
+
+For a qualified specialty expert, set \`specialtyPromotion\` on the LoRA model
+to the absolute path of its evaluated promotion receipt. The worker validates
+the passing baseline comparison, exact base, adapter and runtime, checks
+the registered weight and evaluation artifacts, and confirms the current
+program checkpoint. The specialty uses the base when no configured candidate
+is approved. If the registry changes after a quote, the worker requires a
+fresh quote before committing any spend.
+
 Tool calls are proposals until the worker checks the agent's exact permission
 and obtains a matching verdict from an independent operator-selected
 checker. Configure its HTTPS or loopback endpoint in `checker` and, if needed,

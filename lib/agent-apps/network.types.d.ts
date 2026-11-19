@@ -8,6 +8,14 @@ export interface HarborModel extends Model {
     weights: 'AWQ' | 'MLX';
     kind: 'flagship' | 'lora';
     baseRevision?: string;
+    specialty?: {
+        id: string;
+        version: number;
+        receipt: string;
+        adapter: string;
+        runtime: string;
+        registryBase: string;
+    };
 }
 export interface VaultBinding {
     grantId: string;

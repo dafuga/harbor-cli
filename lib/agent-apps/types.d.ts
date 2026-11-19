@@ -45,6 +45,7 @@ export interface AgentInput {
     total: number;
     files: string[];
     specialty?: string;
+    managedAgents?: string[];
     secrets: string[];
 }
 export interface Agent extends AgentInput {
@@ -81,6 +82,8 @@ export interface Quote extends Price {
     revision: number;
     requestId: string;
     prompt: string;
+    model?: string;
+    modelRevision?: string;
     expiresAt: number;
 }
 export interface Run {
@@ -134,6 +137,7 @@ export interface Network {
     identity?: string;
     models: Model[];
     baseModel?: string;
+    specialtyModel?(id: string, version: number): string | undefined;
     currency: {
         symbol: string;
         precision: number;

@@ -41,12 +41,16 @@ export declare class AgentWorker {
             total: number;
             files: string[];
             specialty?: string;
+            managedAgents?: string[];
             secrets: string[];
         }[];
         routines: Routine[];
         runs: Run[];
         audit: AuditEntry[];
     };
+    private executionAgent;
+    private taskPrompt;
+    private modelRevision;
     createAgent(input: unknown): Agent;
     saveAgent(id: string | undefined, input: unknown): Agent;
     setFeedback(id: string, input: unknown): RunFeedback | {
