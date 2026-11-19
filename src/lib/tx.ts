@@ -1,6 +1,7 @@
 import {ABI, APIClient, Action, FetchProvider, SignedTransaction} from '@wharfkit/antelope'
 import type {ResolvedAction, ResolvedTransaction} from '@wharfkit/signing-request'
 import {Session} from '@wharfkit/session'
+import type {AbstractWalletPlugin} from '@wharfkit/session'
 import {walletPluginFor, type TransactionReview} from './private-key-wallet.js'
 import {HarborTerminalUI} from './terminal-ui.js'
 
@@ -131,8 +132,9 @@ export function summarizeAntelopeTransaction<Data>({expiration, actions}: Pick<R
   }
 }
 
-export async function transactActions(options: AuthOptions, actions: Action[] | Array<Record<string, unknown>>, review?: TransactionReview) {
-  const {result} = await signAndTransact(options, actions, true, review)
+export async function transactActions(options: AuthOptions, actions: Action[] | Array<Record<string, unknown>>,
+  review?: TransactionReview, wallet?: AbstractWalletPlugin) {
+  const {result} = await signAndTransact(options, actions, true, review, wallet)
   const response = result.response as {transaction_id?: string; processed?: {receipt?: {status?: string}}} | undefined
   return {
     transaction_id: response?.transaction_id ?? result.resolved?.transaction.id?.toString(),
@@ -141,7 +143,8 @@ export async function transactActions(options: AuthOptions, actions: Action[] | 
   }
 }
 
-async function signAndTransact(options: AuthOptions, actions: Action[] | Array<Record<string, unknown>>, broadcast: boolean, review?: TransactionReview) {
+async function signAndTransact(options: AuthOptions, actions: Action[] | Array<Record<string, unknown>>,
+  broadcast: boolean, review?: TransactionReview, wallet?: AbstractWalletPlugin) {
   const url = apiUrl(options.url)
   const client = clientFor(url)
   const info = await client.v1.chain.get_info()
@@ -154,7 +157,7 @@ async function signAndTransact(options: AuthOptions, actions: Action[] | Array<R
     }
   }
   const auth = permissionLevel(options)
-  const walletPlugin = await walletPluginFor(options.key, auth.actor, url, review)
+  const walletPlugin = wallet ?? await walletPluginFor(options.key, auth.actor, url, review)
   const session = new Session({
     chain: {id: info.chain_id, url},
     actor: auth.actor,
@@ -178,9 +181,9 @@ export async function signAction(input: PushActionInput, review?: TransactionRev
   return {chain_id: chainId, transaction}
 }
 
-export async function pushAction(input: PushActionInput, review?: TransactionReview) {
+export async function pushAction(input: PushActionInput, review?: TransactionReview, wallet?: AbstractWalletPlugin) {
   const action = await serializeAction(input)
-  return transactActions(input, [action], review)
+  return transactActions(input, [action], review, wallet)
 }
 
 export async function getTableRows<T = unknown>(

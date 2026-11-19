@@ -150,6 +150,7 @@ export interface StorageDownloadOptions {
   marketContract?: string
   storageContract?: string
   expectedSha256?: string
+  readReplica?: (url: URL) => Promise<{status: number; bytes: Buffer}>
 }
 
 export interface StorageDownloadResult {
@@ -1243,11 +1244,15 @@ export async function downloadStoredObjectBytes(options: Omit<StorageDownloadOpt
   const failures: string[] = []
   for (const provider of storageProviders) {
     try {
-      const response = await fetch(new URL(`/objects/${options.contentHash}`, provider.endpoint))
-      const body = Buffer.from(await response.arrayBuffer())
+      const url = new URL(`/objects/${options.contentHash}`, provider.endpoint)
+      const {status, bytes: body} = options.readReplica
+        ? await options.readReplica(url)
+        : await fetch(url).then(async response => ({
+          status: response.status, bytes: Buffer.from(await response.arrayBuffer()),
+        }))
       const actual = sha256(body)
-      if (!response.ok) {
-        failures.push(`${provider.provider}: ${response.status}`)
+      if (status < 200 || status >= 300) {
+        failures.push(`${provider.provider}: ${status}`)
         continue
       }
       if (actual !== options.contentHash) {

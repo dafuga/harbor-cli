@@ -83,3 +83,7 @@ class HarborSigningWallet extends AbstractWalletPlugin {
 export async function walletPluginFor(keyOption: string | undefined, actor: string, url?: string, review?: TransactionReview) {
   return new HarborSigningWallet(await antelopeSigners(keyOption, actor), url, review)
 }
+
+export function walletPluginForSigner(signer: AntelopeSigner, url: string, review: TransactionReview) {
+  return new HarborSigningWallet([signer], url, review)
+}
