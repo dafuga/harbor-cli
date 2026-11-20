@@ -148,6 +148,7 @@ export interface Network {
   models: Model[]
   baseModel?: string
   specialtyModel?(id: string, version: number): string | undefined
+  refreshModels?(signal?: AbortSignal): Promise<void>
   currency: {symbol: string; precision: number}
   quote(agent: Agent, prompt: string, ceiling: number, signal?: AbortSignal): Promise<Price>
   execute(input: {

@@ -138,14 +138,23 @@ export function harborConfig(value: unknown, env = process.env): HarborConfig {
   }
 }
 
-export function localAgentConfig(value: unknown): LocalAgentConfig {
+export function localAgentConfig(value: unknown, env: NodeJS.ProcessEnv = process.env): LocalAgentConfig {
   const data = record(value)
   const chainId = data.chainId === undefined ? HARBOR_TESTNET : text(data.chainId, 'Chain ID', 64)
   if (chainId !== HARBOR_TESTNET && chainId !== LOCAL_TESTNET) throw new AgentError('Use a Harbor testnet identity.')
-  const ollama = serviceUrl(data.ollama ?? 'http://127.0.0.1:11434', 'Local Ollama')
-  if (!['127.0.0.1', '[::1]'].includes(ollama.hostname) || ollama.pathname !== '/') {
-    throw new AgentError('Local Ollama must use a loopback origin.')
+  if (data.backend !== undefined && data.backend !== 'ollama' && data.backend !== 'mlx') {
+    throw new AgentError('Unknown local model backend.')
   }
-  return {chainId, ollama, account: name(data.account, 'Profile account'),
+  const mlx = data.backend === 'mlx'
+  const endpoint = serviceUrl(mlx ? data.mlx ?? 'http://127.0.0.1:11435' : data.ollama ?? 'http://127.0.0.1:11434',
+    'Local model server')
+  if (!['127.0.0.1', '[::1]'].includes(endpoint.hostname) || endpoint.pathname !== '/') {
+    throw new AgentError('Local model server must use a loopback origin.')
+  }
+  const config = {chainId, endpoint, account: name(data.account, 'Profile account'),
     modelRevision: commitment(data.modelRevision, 'Local model revision')}
+  if (!mlx) return config
+  const token = env.HARBOR_AGENT_MLX_TOKEN ?? ''
+  if (!/^[A-Za-z0-9_-]{43}$/.test(token)) throw new AgentError('Set a dedicated HARBOR_AGENT_MLX_TOKEN.')
+  return {...config, mlx: {token, suite: commitment(data.suite, 'Harness shipping suite')}}
 }

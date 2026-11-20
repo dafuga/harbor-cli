@@ -139,6 +139,7 @@ export interface Network {
     models: Model[];
     baseModel?: string;
     specialtyModel?(id: string, version: number): string | undefined;
+    refreshModels?(signal?: AbortSignal): Promise<void>;
     currency: {
         symbol: string;
         precision: number;

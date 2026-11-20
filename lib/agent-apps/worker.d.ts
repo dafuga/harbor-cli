@@ -63,6 +63,7 @@ export declare class AgentWorker {
     };
     setStatus(id: string, status: unknown): Agent;
     private cancelQueued;
+    refreshModels(): Promise<void>;
     quote(id: string, message: unknown): Promise<Quote>;
     confirm(id: string): Run;
     createRoutine(agentId: string, input: unknown): {

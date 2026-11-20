@@ -168,7 +168,7 @@ export class AgentWorker {
       const manifest = specialty === undefined ? undefined : specialtyManifest(specialty, existing?.specialtyVersion)
       const base = this.network.baseModel ?? (this.network.models.length === 1 ? this.network.models[0].id : undefined)
       const model = manifest ? base : text(data.model, 'Model', 80)
-      if (!model || !this.network.models.some(item => item.id === model)) {
+      if (!model || (this.network.localOnly && model !== base) || !this.network.models.some(item => item.id === model)) {
         throw new AgentError('This model is unavailable on the runner.')
       }
       const files = permissions(data.files ?? (manifest ? [] : undefined), hash, 'HarborStore content hashes')
@@ -280,7 +280,12 @@ export class AgentWorker {
     for (const run of runs) this.saveRun({...run, status: 'cancelled', detail}, 'run_cancelled', detail)
   }
 
+  async refreshModels() {
+    await this.network.refreshModels?.()
+  }
+
   async quote(id: string, message: unknown) {
+    await this.refreshModels()
     const agent = this.executionAgent(this.agent(id))
     this.requireActive(agent)
     const prompt = text(message, 'Message', 4000)
@@ -460,7 +465,12 @@ export class AgentWorker {
           )
         ORDER BY json_extract(queued.data, '$.createdAt'), queued.rowid LIMIT 1
       `)
-      return run && this.saveRun({...run, status: 'running', startedAt: now}, 'run_started')
+      if (!run) return
+      const agent = run.routineId && this.network.localOnly ? this.executionAgent(this.agent(run.agentId)) : undefined
+      // Routine approval covers recurring runs. Bind their model at dispatch;
+      // manual runs keep the exact model that was authorized in the quote.
+      const model = agent?.specialty ? {model: agent.model, modelRevision: this.modelRevision(agent)} : {}
+      return this.saveRun({...run, ...model, status: 'running', startedAt: now}, 'run_started')
     })
   }
 
@@ -468,6 +478,12 @@ export class AgentWorker {
     if (this.sweeping) return
     this.sweeping = true
     try {
+      if (this.network.refreshModels && this.store.query(`
+        SELECT data FROM runs WHERE json_extract(data, '$.status') = 'queued'
+        UNION ALL SELECT data FROM routines WHERE json_extract(data, '$.nextAt') <= ? LIMIT 1
+      `, this.now()).length) {
+        await this.refreshModels()
+      }
       const run = this.claim()
       if (run) await this.execute(run)
     } finally {

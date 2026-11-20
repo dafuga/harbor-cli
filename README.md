@@ -982,6 +982,16 @@ no wallet key, uses zero-fee confirmations, and keeps specialty feedback in
 the local worker database. The selected testnet identity must match the app.
 The worker can serve a paired phone while the computer is online.
 
+For the Harbor Harness Coder MLX training and serving profile, use
+`"backend": "mlx"`, put the loopback service address in `mlx`
+(default `http://127.0.0.1:11435`), and set `modelRevision` to the MLX
+base weights fingerprint and `suite` to the canonical shipping suite
+fingerprint. Start the companion MLX service using the Harbor training
+runbook and supply the same dedicated `HARBOR_AGENT_MLX_TOKEN` to both
+processes. Harness Coder uses the approved adapter when one is available.
+The worker binds each quote, run and optional rating to its served revision.
+
+
 ### Harbor testnet network workers
 
 Use an isolated Harbor CLI home for the worker. Create a named encrypted K1

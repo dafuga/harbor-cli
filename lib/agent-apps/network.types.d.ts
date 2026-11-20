@@ -48,6 +48,10 @@ export interface HarborConfig {
 export interface LocalAgentConfig {
     chainId: string;
     account: string;
-    ollama: URL;
+    endpoint: URL;
     modelRevision: string;
+    mlx?: {
+        suite: string;
+        token: string;
+    };
 }
