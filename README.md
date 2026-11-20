@@ -1064,11 +1064,16 @@ Coder. Specialty defaults are versioned and schedules start paused. Chief
 of Staff can summarize status for the agent IDs explicitly selected by the
 owner. Specialty permissions never include Vault keys. Rates and Harbor
 account controls still apply to every run. Owners can record or delete
-training-consented answer and task feedback on the worker.
+training-consented answer and task feedback on the worker. The scheduled
+local trainer reads consented ratings and outcomes directly from the worker
+database. Prompts, assistant answers, tool traces and optional feedback notes
+stay outside automatic training. A round can wait for more eligible ratings
+without stopping agent execution.
 
 For a qualified specialty expert, set \`specialtyPromotion\` on the LoRA model
 to the absolute path of its evaluated promotion receipt. The worker validates
-the passing baseline comparison, exact base, adapter and runtime, checks
+the passing baseline comparison, required checks and absence of held-out
+regressions. It also validates the exact base, adapter and runtime, checks
 the registered weight and evaluation artifacts, and confirms the current
 program checkpoint. The specialty uses the base when no configured candidate
 is approved. If the registry changes after a quote, the worker requires a

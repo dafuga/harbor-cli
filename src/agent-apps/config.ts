@@ -44,7 +44,8 @@ function specialtyPromotion(pathValue: unknown) {
     const candidate = amount(counts.candidate, 'Candidate score')
     if (receipt.format !== 'harbor.specialty-promotion.v1' || receipt.passed !== true ||
         receipt.suiteId !== manifest.evaluationSuite || !Array.isArray(receipt.hardFailures) ||
-        receipt.hardFailures.length || candidate <= Math.max(base, incumbent) ||
+        receipt.hardFailures.length || !Array.isArray(receipt.regressions) || receipt.regressions.length ||
+        candidate <= Math.max(base, incumbent) ||
         typeof receipt.suite !== 'string' || !hash(receipt.suite) ||
         typeof receipt.evaluation !== 'string' || !hash(receipt.evaluation)) throw new Error('promotion failed')
     return {id: manifest.id, version, receipt: sha256(bytes), adapter: commitment(receipt.candidate, 'Adapter'),
