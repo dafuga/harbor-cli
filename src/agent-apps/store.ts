@@ -4,7 +4,7 @@ import {dirname} from 'node:path'
 
 type Value = string | number | null
 type Row = Record<string, Value>
-type Table = 'agents' | 'routines' | 'quotes' | 'runs'
+type Table = 'agents' | 'routines' | 'quotes' | 'runs' | 'feedback'
 
 interface Statement {
   run(...params: Value[]): unknown
@@ -37,10 +37,13 @@ export class AgentStore {
       PRAGMA busy_timeout = 5000;
       PRAGMA journal_mode = WAL;
       PRAGMA synchronous = FULL;
+      PRAGMA secure_delete = ON;
       CREATE TABLE IF NOT EXISTS agents (id TEXT PRIMARY KEY, data TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS routines (id TEXT PRIMARY KEY, data TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS quotes (id TEXT PRIMARY KEY, data TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS runs (id TEXT PRIMARY KEY, data TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS feedback (id TEXT PRIMARY KEY, data TEXT NOT NULL);
+      CREATE INDEX IF NOT EXISTS run_feedback ON feedback (json_extract(data, '$.runId'));
       CREATE TABLE IF NOT EXISTS prompts (id TEXT PRIMARY KEY, input TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS metadata (id TEXT PRIMARY KEY, value TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS audit (seq INTEGER PRIMARY KEY, data TEXT NOT NULL);

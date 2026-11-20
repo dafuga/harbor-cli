@@ -1,3 +1,40 @@
+export interface SpecialtyManifest {
+    id: string;
+    version: number;
+    name: string;
+    description: string;
+    skills: readonly string[];
+    tools: readonly string[];
+    instructions: string;
+    systemPrompt: string;
+    routine: {
+        name: string;
+        prompt: string;
+        intervalMinutes: number;
+    };
+    evaluationSuite: string;
+    expertProgram: string;
+}
+export declare const FEEDBACK_POLICY = "harbor.agent-feedback.v1";
+export interface RunFeedback {
+    id: string;
+    runId: string;
+    agentId: string;
+    specialty: string;
+    specialtyVersion: number;
+    kind: 'answer' | 'task';
+    rating: 'up' | 'down';
+    policy: typeof FEEDBACK_POLICY;
+    recordedAt: number;
+    outcome: {
+        status: RunStatus;
+        scheduled: boolean;
+    };
+    model: string;
+    modelRevision?: string;
+    reason?: string;
+    correction?: string;
+}
 export type AgentStatus = 'active' | 'paused' | 'killed';
 export type RunStatus = 'queued' | 'running' | 'completed' | 'blocked' | 'failed' | 'cancelled' | 'needs_attention';
 export interface AgentInput {
@@ -7,11 +44,14 @@ export interface AgentInput {
     perRun: number;
     total: number;
     files: string[];
+    specialty?: string;
+    managedAgents?: string[];
     secrets: string[];
 }
 export interface Agent extends AgentInput {
     id: string;
     status: AgentStatus;
+    specialtyVersion?: number;
     revision: number;
 }
 export interface RoutineInput {
@@ -30,6 +70,7 @@ export interface Routine extends RoutineInput {
 export interface Model {
     id: string;
     label: string;
+    revision?: string;
 }
 export interface Price {
     maxCost: number;
@@ -41,6 +82,8 @@ export interface Quote extends Price {
     revision: number;
     requestId: string;
     prompt: string;
+    model?: string;
+    modelRevision?: string;
     expiresAt: number;
 }
 export interface Run {
@@ -48,6 +91,10 @@ export interface Run {
     agentId: string;
     revision: number;
     routineId: string | null;
+    specialty?: string;
+    specialtyVersion?: number;
+    model?: string;
+    modelRevision?: string;
     prompt: string;
     limit: number;
     status: RunStatus;
@@ -88,7 +135,11 @@ export interface Delivery {
 }
 export interface Network {
     identity?: string;
+    localOnly?: boolean;
     models: Model[];
+    baseModel?: string;
+    specialtyModel?(id: string, version: number): string | undefined;
+    refreshModels?(signal?: AbortSignal): Promise<void>;
     currency: {
         symbol: string;
         precision: number;

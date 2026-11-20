@@ -68,10 +68,17 @@ export function workerServer(worker: AgentWorker, token: string) {
         if (id && !action) return send(response, 200, worker.saveAgent(id, data))
         if (id && action === 'status') return send(response, 200, worker.setStatus(id, data.status))
         if (id && action === 'quote') return send(response, 200, await worker.quote(id, data.message))
+        if (id && action === 'clear-feedback') return send(response, 200, worker.clearFeedback(id))
         if (id && action === 'routines') return send(response, 201, worker.createRoutine(id, data))
       }
+      if (collection === 'runs' && id && action === 'feedback' && request.method === 'POST') {
+        return send(response, 200, worker.setFeedback(id, await input(request)))
+      }
       if (request.method === 'POST' && id && !action) {
-        if (collection === 'confirm') return send(response, 202, worker.confirm(id))
+        if (collection === 'confirm') {
+          await worker.refreshModels()
+          return send(response, 202, worker.confirm(id))
+        }
         if (collection === 'routines') return send(response, 200, worker.setRoutine(id, (await input(request)).enabled))
         if (collection === 'reconcile') return send(response, 200, await worker.reconcile(id))
       }

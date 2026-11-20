@@ -9,6 +9,7 @@ export interface HarborModel extends Model {
   weights: 'AWQ' | 'MLX'
   kind: 'flagship' | 'lora'
   baseRevision?: string
+  specialty?: {id: string; version: number; receipt: string; adapter: string; runtime: string; registryBase: string}
 }
 
 export interface VaultBinding {
@@ -32,4 +33,12 @@ export interface HarborConfig {
   currency: {symbol: string; precision: number}
   storageOrigins: Set<string>
   vault: Map<string, VaultBinding>
+}
+
+export interface LocalAgentConfig {
+  chainId: string
+  account: string
+  endpoint: URL
+  modelRevision: string
+  mlx?: {suite: string; token: string}
 }

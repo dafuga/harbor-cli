@@ -1,5 +1,8 @@
 import assert from 'node:assert/strict'
 import {createServer} from 'node:http'
+import {mkdtemp, rm, writeFile} from 'node:fs/promises'
+import {tmpdir} from 'node:os'
+import {join} from 'node:path'
 import {once} from 'node:events'
 import {test} from 'node:test'
 import {PrivateKey} from '@wharfkit/antelope'
@@ -40,7 +43,23 @@ test('HRA3 gateway authentication matches the Harbor router golden vector', () =
   '69c6ee9eab873b41ca869f76a690c1b16c35e01beb6a054970c7e34479821f30')
 })
 
-test('quotes without the prompt, submits once, verifies the exact provider commitment and scopes the checker', async () => {
+test('quotes without the prompt, submits once, verifies the exact provider commitment and scopes the checker', async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'harbor-specialty-promotion-'))
+  t.after(() => rm(directory, {recursive: true, force: true}))
+  const receiptFile = join(directory, 'promotion.json')
+  const promotion = {
+    format: 'harbor.specialty-promotion.v1', specialty: 'harness-coder', version: 1, suiteId: 'harness-coder-v1',
+    suite: '1'.repeat(64), evaluation: '2'.repeat(64), runtime: '3'.repeat(64), registryBase: flagship.revision,
+    candidate: '4'.repeat(64), counts: {base: 4, incumbent: 5, candidate: 6}, hardFailures: [], regressions: [], passed: true,
+  }
+  const expert = {...flagship, id: 'harness-expert', modelId: '2', programId: '8',
+    kind: 'lora', revision: 'b'.repeat(64), baseRevision: flagship.revision, specialtyPromotion: receiptFile}
+  await writeFile(receiptFile, JSON.stringify({...promotion, counts: {...promotion.counts, candidate: 5}}))
+  assert.throws(() => harborConfig({...profile, models: [flagship, expert]}), /passing pinned promotion/)
+  await writeFile(receiptFile, JSON.stringify({...promotion, regressions: ['previously-passing']}))
+  assert.throws(() => harborConfig({...profile, models: [flagship, expert]}), /passing pinned promotion/)
+  const receipt = JSON.stringify(promotion)
+  await writeFile(receiptFile, receipt)
   const privateKey = PrivateKey.generate('K1')
   const publicKey = privateKey.toPublic()
   const signal = AbortSignal.timeout(10_000)
@@ -56,6 +75,7 @@ test('quotes without the prompt, submits once, verifies the exact provider commi
   let blocked = false
   let malformed = false
   let extraLink = false
+  let published = false
   const upstream = createServer(async (req, res) => {
     const chunks = []
     for await (const chunk of req) chunks.push(chunk)
@@ -70,14 +90,22 @@ test('quotes without the prompt, submits once, verifies the exact provider commi
           linked_actions: ['reqroute', 'commitseed', 'ackinfer', 'canceljob', ...(extraLink ? ['reqinfer'] : [])]
             .map(action => ({account: 'harborai', action}))}]}
         break
-      case '/v1/chain/get_table_rows':
-        data = {rows: body.table === 'models'
-          ? [{id: '1', status: 1, model_type: 1, parent_model_id: '0'}]
-          : body.table === 'modelmanifs'
-            ? [{model_id: '1', source_type: 1, capabilities: 1, revision_hash: flagship.revision}]
-            : [job], more: false}
+      case '/v1/chain/get_table_rows': {
+        const isExpert = body.lower_bound === '2'
+        const rows = ({
+          models: [isExpert
+            ? {id: '2', status: 1, model_type: 2, parent_model_id: '1', weights_artifact_id: '12', eval_artifact_id: '13'}
+            : {id: '1', status: 1, model_type: 1, parent_model_id: '0'}],
+          modelmanifs: [{model_id: isExpert ? '2' : '1', source_type: 1, capabilities: 1,
+            revision_hash: isExpert ? expert.revision : flagship.revision, runtime_profile_hash: promotion.runtime}],
+          programs: [{id: '8', active: true, current_model_id: published ? '2' : '1'}],
+          artifacts: [{id: body.lower_bound, content_hash: body.lower_bound === '12' ? promotion.candidate : sha256(receipt)}],
+          inferjobs: [job],
+        } as Record<string, unknown[]>)[body.table as string]
+        data = {rows, more: false}
         if (body.index_position === '3') assert.equal(body.key_type, 'i64')
         break
+      }
       case '/ai/route':
       case '/ai/infer': {
         if (req.url === '/ai/route') {
@@ -117,7 +145,7 @@ test('quotes without the prompt, submits once, verifies the exact provider commi
     assert.ok(address && typeof address === 'object')
     return `http://127.0.0.1:${address.port}`
   }
-  const config = harborConfig({...profile, rpc: base(upstream), router: base(upstream), checker: base(checker) + '/check'},
+  const config = harborConfig({...profile, rpc: base(upstream), router: base(upstream), checker: base(checker) + '/check', models: [flagship, expert]},
     {HARBOR_AGENT_CHECKER_TOKEN: 'test-checker-token'})
   const transact: typeof pushAction = async input => {
     assert.equal(input.expectChainId, HARBOR_TESTNET)
@@ -134,6 +162,15 @@ test('quotes without the prompt, submits once, verifies the exact provider commi
   try {
     const network = new HarborNetwork(config, {publicKey, async sign() { throw new Error('fixture signs no transactions') }}, transact)
     await network.ready()
+    assert.equal(network.specialtyModel('harness-coder', 1), undefined)
+    assert.equal(network.models.length, 1)
+    published = true
+    await network.ready()
+    assert.equal(network.specialtyModel('harness-coder', 1), expert.id)
+    assert.equal(network.specialtyModel('coder', 1), undefined)
+    published = false
+    await assert.rejects(network.quote({...agent, model: expert.id}, prompt, 100, signal), /model changed/)
+    assert.equal(network.specialtyModel('harness-coder', 1), undefined)
     extraLink = true
     await assert.rejects(network.ready(), /exact HarborAI/)
     extraLink = false

@@ -78,9 +78,12 @@ export class HarborNetwork implements Network {
   readonly models
   readonly currency
   readonly identity
+  readonly baseModel
+  private readonly acceptedSpecialties = new Map<string, string>()
 
   constructor(private readonly config: HarborConfig, private readonly signer: AntelopeSigner, private readonly transact = pushAction) {
-    this.models = config.models.map(({id, label}) => ({id, label}))
+    this.models = config.models.filter(model => !model.specialty).map(({id, label, revision}) => ({id, label, revision}))
+    this.baseModel = config.models.find(model => model.kind === 'flagship')!.id
     this.currency = config.currency
     this.identity = `${config.chainId}/${config.account}`
   }
@@ -116,6 +119,9 @@ export class HarborNetwork implements Network {
     if (linked.length !== required.length || required.some(action => !linked.includes(action))) {
       throw new AgentError('Worker permission is missing or exceeds the exact HarborAI and Vault action links.', 409)
     }
+    this.acceptedSpecialties.clear()
+    const ordinary = this.models.filter(({id}) => !this.config.models.find(model => model.id === id)?.specialty)
+    this.models.splice(0, this.models.length, ...ordinary)
     const flagship = this.config.models.find(model => model.kind === 'flagship')!
     for (const model of this.config.models) {
       const [entry, manifest] = await Promise.all([
@@ -127,9 +133,30 @@ export class HarborNetwork implements Network {
           String(entry.parent_model_id) !== expectedParent ||
           !manifest || Number(manifest.source_type) !== 1 || !(Number(manifest.capabilities) & 1) ||
           manifest.revision_hash !== model.revision) {
+        if (model.specialty) continue
         throw new AgentError('A configured model lacks the exact active Harbor model and manifest lineage.', 409)
       }
+      const specialty = model.specialty
+      if (!specialty || manifest.runtime_profile_hash !== specialty.runtime) continue
+      const weightsId = String(entry.weights_artifact_id ?? '0')
+      const evaluationId = String(entry.eval_artifact_id ?? '0')
+      const [current, weights, evaluation] = await Promise.all([
+        this.isCurrentSpecialty(model), this.row('artifacts', weightsId), this.row('artifacts', evaluationId),
+      ])
+      if (!current || weights?.content_hash !== specialty.adapter || evaluation?.content_hash !== specialty.receipt ||
+          weightsId === '0' || evaluationId === '0') continue
+      this.acceptedSpecialties.set(specialty.id + ':' + specialty.version, model.id)
+      this.models.push({id: model.id, label: model.label, revision: model.revision})
     }
+  }
+
+  specialtyModel(id: string, version: number) {
+    return this.acceptedSpecialties.get(id + ':' + version)
+  }
+
+  private async isCurrentSpecialty(model: HarborModel, signal?: AbortSignal) {
+    const program = await this.row('programs', model.programId, signal)
+    return (program?.active === true || program?.active === 1) && String(program.current_model_id) === model.modelId
   }
 
   private permissionUsesWorkerKey(permission: Record<string, unknown>) {
@@ -212,6 +239,12 @@ export class HarborNetwork implements Network {
   async quote(agent: Agent, prompt: string, ceiling: number, signal?: AbortSignal): Promise<Price> {
     await this.assertChain(signal)
     const model = this.harborModel(agent)
+    if (model.specialty && !await this.isCurrentSpecialty(model, signal)) {
+      this.acceptedSpecialties.delete(model.specialty.id + ':' + model.specialty.version)
+      const index = this.models.findIndex(item => item.id === model.id)
+      if (index !== -1) this.models.splice(index, 1)
+      throw new AgentError('The approved specialty model changed. Request a new quote.', 409)
+    }
     const {data} = await this.router('/ai/route', this.body(model, prompt, ceiling), signal)
     const deployment = this.assertRoute(data, model, sha256(prompt))
     const maxCost = this.fee(data.gross_inference_fee_ceiling)

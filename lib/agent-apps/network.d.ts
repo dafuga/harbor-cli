@@ -10,16 +10,21 @@ export declare class HarborNetwork implements Network {
     readonly models: {
         id: string;
         label: string;
+        revision: string;
     }[];
     readonly currency: {
         symbol: string;
         precision: number;
     };
     readonly identity: string;
+    readonly baseModel: string;
+    private readonly acceptedSpecialties;
     constructor(config: HarborConfig, signer: AntelopeSigner, transact?: typeof pushAction);
     private chain;
     private assertChain;
     ready(): Promise<void>;
+    specialtyModel(id: string, version: number): string | undefined;
+    private isCurrentSpecialty;
     private permissionUsesWorkerKey;
     private push;
     private harborModel;

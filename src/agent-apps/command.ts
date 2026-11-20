@@ -4,11 +4,13 @@ import {hostname} from 'node:os'
 import {resolve} from 'node:path'
 import {Command} from 'commander'
 import {openAntelopeWorkerSigner} from '../lib/wallet.js'
-import {harborConfig} from './config.js'
+import {harborConfig, localAgentConfig} from './config.js'
+import {LocalAgentNetwork} from './local.js'
 import {HarborNetwork} from './network.js'
 import {workerServer} from './server.js'
 import {AgentWorker} from './worker.js'
 import {text} from './validation.js'
+import type {Network} from './types.js'
 
 export function createAgentAppsCommand() {
   const agents = new Command('agents').description('Host always-on Harbor agent apps and routines')
@@ -24,43 +26,53 @@ export function createAgentAppsCommand() {
       const token = process.env.HARBOR_AGENT_TOKEN ?? ''
       if (!/^[A-Za-z0-9_-]{43}$/.test(token)) throw new Error('Set a dedicated HARBOR_AGENT_TOKEN using harbor agents token.')
       const raw = JSON.parse(await readFile(resolve(options.config), 'utf8'))
+      const host = text(raw.host ?? hostname(), 'Worker name', 160)
+      if (raw.mode === 'local') {
+        const network = new LocalAgentNetwork(localAgentConfig(raw))
+        await network.verifyModel()
+        await serveWorker(network, host, resolve(options.db), token, port)
+        return
+      }
       const config = harborConfig(raw)
-      const host = text(raw.host ?? hostname(), 'Always-on host name', 160)
       const signer = await openAntelopeWorkerSigner(config.key)
       try {
         const network = new HarborNetwork(config, signer)
         await network.ready()
-        const worker = new AgentWorker(resolve(options.db), host, network)
-        const server = workerServer(worker, token)
-        try {
-          await new Promise<void>((done, reject) => {
-            server.once('error', reject)
-            server.listen(port, '127.0.0.1', done)
-          })
-          console.log(`Harbor agents worker for ${config.account} at http://127.0.0.1:${port} (${host})`)
-          let active: Promise<void> | undefined
-          const timer = setInterval(() => {
-            if (active) return
-            active = worker.tick().catch(() => { process.stderr.write('Harbor agents worker tick failed.\n') })
-              .finally(() => { active = undefined })
-          }, 1000)
-          try {
-            await new Promise<void>(done => {
-              process.once('SIGINT', done)
-              process.once('SIGTERM', done)
-            })
-          } finally {
-            clearInterval(timer)
-            worker.stop()
-            await new Promise<void>(done => server.close(() => done()))
-            await active
-          }
-        } finally {
-          worker.close()
-        }
+        await serveWorker(network, host, resolve(options.db), token, port)
       } finally {
         signer.close()
       }
     })
   return agents
+}
+
+async function serveWorker(network: Network, host: string, file: string, token: string, port: number) {
+  const worker = new AgentWorker(file, host, network)
+  const server = workerServer(worker, token)
+  try {
+    await new Promise<void>((done, reject) => {
+      server.once('error', reject)
+      server.listen(port, '127.0.0.1', done)
+    })
+    console.log(`Harbor agents worker at http://127.0.0.1:${port} (${host})`)
+    let active: Promise<void> | undefined
+    const timer = setInterval(() => {
+      if (active) return
+      active = worker.tick().catch(() => { process.stderr.write('Harbor agents worker tick failed.\n') })
+        .finally(() => { active = undefined })
+    }, 1000)
+    try {
+      await new Promise<void>(done => {
+        process.once('SIGINT', done)
+        process.once('SIGTERM', done)
+      })
+    } finally {
+      clearInterval(timer)
+      worker.stop()
+      await new Promise<void>(done => server.close(() => done()))
+      await active
+    }
+  } finally {
+    worker.close()
+  }
 }
