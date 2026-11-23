@@ -20,6 +20,7 @@ const transcript = []
 let registered = false
 let installed
 let foreground
+let externalBackend
 
 function report(command, result) {
   transcript.push(`$ ${command}`, result, '')
@@ -37,10 +38,10 @@ async function bind(server) {
   return server.address().port
 }
 
-async function stopForeground() {
-  if (foreground && foreground.exitCode === null && foreground.signalCode === null) {
-    const finished = once(foreground, 'exit')
-    foreground.kill('SIGTERM')
+async function stopChild(child) {
+  if (child && child.exitCode === null && child.signalCode === null) {
+    const finished = once(child, 'exit')
+    child.kill('SIGTERM')
     await finished
   }
 }
@@ -81,6 +82,12 @@ try {
   const manager = doctor.checks.find(({check}) => check === 'service-manager')
   if (!foregroundOnly) assert.equal(manager.ok, true, manager.value)
   report('harbor doctor --json', `${doctor.platform} · ${doctor.runtime} · ${manager.value}`)
+  await exec(process.execPath, [cli, 'agent', 'init', '--account', 'smokeagent'], {env, timeout: 30_000})
+  const agentDoctor = await harbor('agent', 'doctor', '--json')
+  assert.equal(agentDoctor.platform, doctor.platform)
+  assert.equal(agentDoctor.checks.find(({check}) => check === 'config').ok, true)
+  assert.equal((await fs.stat(path.join(home, 'config.json'))).mode & 0o777, 0o600)
+  report('harbor agent init / doctor', 'Private agent config created and read back')
   const backendPort = await bind(backendReservation)
   const servicePort = await bind(portReservation)
   await Promise.all([portReservation, backendReservation].map((server) => new Promise((resolve) => server.close(resolve))))
@@ -88,21 +95,27 @@ try {
   const options = [
     'aiinfer', '--source', 'local', '--config', config, '--port', String(servicePort),
     '--model-profile', 'flagship', '--backend-endpoint', `http://127.0.0.1:${backendPort}/v1/chat/completions`,
-    '--ollama', backendFixture,
   ]
-  const plan = await harbor('run', ...options, '--dry-run')
+  const managedOptions = ['--ollama', backendFixture]
+  const plan = await harbor('run', ...options, ...managedOptions, '--dry-run')
   assert.equal(plan.port, servicePort)
-  assert.equal(plan.limits.cpu_percent, 40)
-  assert.equal(plan.limits.memory_percent, 40)
-  assert.equal(plan.limits.gpu_percent, 40)
+  assert.equal(plan.limits.cpu_percent, 50)
+  assert.equal(plan.limits.memory_percent, 50)
+  assert.equal(plan.limits.gpu_percent, 50)
   assert.equal(plan.model_profile.model, modelName)
   assert.equal(plan.managed_backend.engine, 'ollama')
-  report('harbor run aiinfer --dry-run', `${plan.release_asset} · 40% CPU / GPU / memory`)
-  // Small CI runners can exercise the mock backend with a larger budget without loading model weights.
-  if (!plan.model_profile.fits_memory_cap) options.push('--memory-percent', '100')
+  report('harbor run aiinfer --dry-run', `${plan.release_asset} · 50% CPU / GPU / memory`)
   const model = await harbor('ai', 'local-model', '--model-profile', 'flagship', '--json')
   assert.equal(model.expert_training, 'QLoRA')
   report('harbor ai local-model --model-profile flagship', `${model.model} · ${model.expert_adapter_base} adapter base`)
+  const tags = `http://127.0.0.1:${backendPort}/api/tags`
+  if (plan.model_profile.fits_memory_cap) {
+    options.push(...managedOptions)
+  } else {
+    externalBackend = spawn(process.execPath, [backendFixture], {env: {...env, OLLAMA_HOST: `127.0.0.1:${backendPort}`}, stdio: 'inherit'})
+    await once(externalBackend, 'spawn')
+    report('Backend fixture', 'External loopback backend for a host below local model limits')
+  }
   if (foregroundOnly) {
     foreground = spawn(process.execPath, [cli, 'run', ...options], {env, stdio: 'inherit'})
     for (let attempt = 0; attempt < 100; attempt++) {
@@ -132,7 +145,7 @@ try {
   assert.match(result.result_hash, /^[a-f0-9]{64}$/)
   report('POST /ai/infer', `HTTP ${infer.status} · OpenAI-compatible test backend response verified`)
   if (foregroundOnly) {
-    await stopForeground()
+    await stopChild(foreground)
     report('Stop foreground Harbor', 'Process exited')
   } else {
     const restart = await harbor('service', 'restart', 'aiinfer', '--json')
@@ -144,8 +157,9 @@ try {
     report('harbor service stop / uninstall aiinfer', 'Stopped and unregistered')
   }
   assert.equal(await fetch(health, {signal: AbortSignal.timeout(1000)}).then(() => true).catch(() => false), false)
-  assert.equal(await fetch(`http://127.0.0.1:${backendPort}/api/tags`, {signal: AbortSignal.timeout(1000)}).then(() => true).catch(() => false), false)
-  report('Verify shutdown', 'Inference and managed backend ports closed')
+  await stopChild(externalBackend)
+  assert.equal(await fetch(tags, {signal: AbortSignal.timeout(1000)}).then(() => true).catch(() => false), false)
+  report('Verify shutdown', `Inference and ${externalBackend ? 'fixture' : 'managed backend'} ports closed`)
   if (evidence) {
     await fs.mkdir(evidence, {recursive: true})
     const stem = doctor.runtime === 'wsl2' ? `windows-wsl2-${process.arch}` : doctor.platform
@@ -174,7 +188,8 @@ try {
   throw error
 } finally {
   if (registered) await harbor('service', 'uninstall', 'aiinfer', '--json')
-  await stopForeground()
+  await stopChild(foreground)
+  await stopChild(externalBackend)
   backendReservation.close()
   portReservation.close()
   await fs.rm(home, {recursive: true, force: true})

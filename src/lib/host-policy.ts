@@ -36,7 +36,7 @@ export async function hostState(): Promise<HostState> {
       on_battery: battery ? battery.includes("'Battery Power'") : null,
       active: idle ? Number(idle) < 5 * 60 * 1e9 : null,
       hot: thermal ? (Boolean(speed && Number(speed) < 80) || /thermal pressure.*(?:serious|critical)/i.test(thermal)) : null,
-      available_memory_bytes: os.freemem(),
+      available_memory_bytes: process.availableMemory() || os.freemem(),
     }
   }
 

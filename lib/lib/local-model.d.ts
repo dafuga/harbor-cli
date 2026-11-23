@@ -7,6 +7,7 @@ export declare function localModel(profile?: string, totalMemory?: number, memor
     expert_adapter_base: "Qwen/Qwen3-8B";
     backend_endpoint: string;
     fits_memory_cap: boolean;
+    minimum_host_memory_gib: number;
     model: "qwen3:8b-q4_K_M";
     base_checkpoint: "Qwen/Qwen3-8B";
     awq_checkpoint: "Qwen/Qwen3-8B-AWQ";

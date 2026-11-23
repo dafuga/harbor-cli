@@ -1,3 +1,4 @@
+export declare const DEFAULT_RESOURCE_PERCENT = 50;
 export interface LimitOptions {
     cpuPercent?: string | number;
     memoryPercent?: string | number;

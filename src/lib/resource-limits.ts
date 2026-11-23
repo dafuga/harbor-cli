@@ -9,6 +9,7 @@ import {harborHome} from './config.js'
 
 const exec = promisify(execFile)
 const SAMPLE_MS = 500
+export const DEFAULT_RESOURCE_PERCENT = 50
 
 export interface LimitOptions {
   cpuPercent?: string | number
@@ -25,7 +26,7 @@ export interface ResourceLimits {
 }
 
 function percent(value: string | number | undefined, name: string, minimum = 1): number {
-  const number = value === undefined ? 40 : Number(value)
+  const number = value === undefined ? DEFAULT_RESOURCE_PERCENT : Number(value)
   if (!Number.isInteger(number) || number < minimum || number > 100) {
     throw new Error(`${name} must be an integer from ${minimum} to 100`)
   }

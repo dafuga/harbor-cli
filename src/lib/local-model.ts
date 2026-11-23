@@ -6,9 +6,10 @@ import {executableExists} from './artifacts.js'
 import {harborHome} from './config.js'
 import {verifyQwenGguf} from './gguf.js'
 import {gpuCapacity} from './host-policy.js'
-import {ResourceLimits} from './resource-limits.js'
+import {DEFAULT_RESOURCE_PERCENT, ResourceLimits} from './resource-limits.js'
 
 const GiB = 1024 ** 3
+const MINIMUM_HOST_MEMORY_GIB = 16
 const QWEN3_8B = {
   model: 'qwen3:8b-q4_K_M',
   base_checkpoint: 'Qwen/Qwen3-8B',
@@ -21,7 +22,7 @@ const QWEN3_8B = {
 export const LOCAL_BACKEND_ENDPOINT = 'http://127.0.0.1:11434/v1/chat/completions'
 export const LOCAL_BACKEND_KEY_ENV = 'HARBOR_LOCAL_INFERENCE_TOKEN'
 
-export function localModel(profile = 'auto', totalMemory = os.totalmem(), memoryBudget = totalMemory * 0.4) {
+export function localModel(profile = 'auto', totalMemory = os.totalmem(), memoryBudget = totalMemory * DEFAULT_RESOURCE_PERCENT / 100) {
   if (profile !== 'auto' && profile !== 'flagship') throw new Error('the local model profile is Qwen3 8B 4-bit; use auto or flagship')
   return {
     profile: 'flagship',
@@ -30,7 +31,8 @@ export function localModel(profile = 'auto', totalMemory = os.totalmem(), memory
     expert_training: 'QLoRA',
     expert_adapter_base: QWEN3_8B.base_checkpoint,
     backend_endpoint: LOCAL_BACKEND_ENDPOINT,
-    fits_memory_cap: memoryBudget >= QWEN3_8B.working_memory_gib * GiB,
+    fits_memory_cap: totalMemory >= MINIMUM_HOST_MEMORY_GIB * GiB && memoryBudget >= QWEN3_8B.working_memory_gib * GiB,
+    minimum_host_memory_gib: MINIMUM_HOST_MEMORY_GIB,
   }
 }
 
@@ -97,7 +99,7 @@ export async function planManagedBackend(
   const executable = path.resolve((options.ollama ?? options.llamaServer)!)
   const tier = profile ?? localModel('auto', os.totalmem(), limits.memory_bytes)
   if (!dryRun && !tier.fits_memory_cap) {
-    throw new Error(`Qwen3 8B 4-bit needs an estimated ${tier.working_memory_gib} GiB within the configured memory cap`)
+    throw new Error(`Qwen3 8B 4-bit needs at least ${tier.minimum_host_memory_gib} GiB of host memory and an estimated ${tier.working_memory_gib} GiB within the configured memory cap`)
   }
   const gpu = await gpuCapacity()
   // Qwen GQA at 4K and q8 KV needs roughly 288 MiB per stream. Leave headroom for allocator overhead.

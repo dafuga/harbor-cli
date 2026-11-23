@@ -60,8 +60,9 @@ test('buildRunPlan dry-run does not require an installed binary', {skip: process
   assert.equal(plan.daemon, 'harbor-routerd')
   assert.equal(plan.port, 9213)
   assert.deepEqual(plan.command, [plan.binary, '--config', config])
-  assert.equal(plan.limits.cpu_percent, 40)
-  assert.equal(plan.limits.memory_percent, 40)
+  assert.equal(plan.limits.cpu_percent, 50)
+  assert.equal(plan.limits.memory_percent, 50)
+  assert.equal(plan.limits.gpu_percent, 50)
   await assert.rejects(fs.access(config), {code: 'ENOENT'})
 })
 

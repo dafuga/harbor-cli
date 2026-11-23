@@ -6,27 +6,54 @@ on:
     branches: [main, harbor-cli-xplat]
     tags: ['v*']
   workflow_dispatch:
+    inputs:
+      qualify_windows:
+        description: Run the WSL2 qualification when a Windows runner is available
+        type: boolean
+        default: false
 
 permissions:
   contents: read
 
 jobs:
-  source:
-    runs-on: ubuntu-24.04
-    outputs:
-      opportunities: ${{ steps.revision.outputs.sha }}
+  cli:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { runner: ubuntu-22.04, target: linux-x64 }
+          - { runner: ubuntu-22.04-arm, target: linux-arm64 }
+          - { runner: macos-15-intel, target: macos-x64 }
+          - { runner: macos-15, target: macos-arm64 }
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
         with:
-          repository: dafuga/harbor-opportunities
-          ref: ${{ vars.HARBOR_OPPORTUNITIES_REF || 'main' }}
-          token: ${{ secrets.HARBOR_OPPORTUNITIES_TOKEN || github.token }}
           persist-credentials: false
-      - id: revision
-        run: git rev-parse HEAD | sed 's/^/sha=/' >> "$GITHUB_OUTPUT"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Build and test CLI
+        run: |
+          npm ci
+          npm run compile
+          npm run check
+          npm test
+      - name: Package Node CLI
+        if: matrix.target == 'linux-x64'
+        run: |
+          mkdir -p cli-dist
+          npm pack --pack-destination cli-dist --ignore-scripts
+      - uses: actions/upload-artifact@v4
+        if: matrix.target == 'linux-x64'
+        with:
+          name: harbor-cli-package
+          path: cli-dist/
+          if-no-files-found: error
 
   native:
-    needs: source
+    if: github.event_name != 'pull_request' && (vars.HARBOR_NATIVE_ARTIFACTS == 'enabled' || startsWith(github.ref, 'refs/tags/v'))
     strategy:
       fail-fast: false
       matrix:
@@ -37,27 +64,23 @@ jobs:
           - { runner: macos-15, target: macos-arm64 }
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 40
-    env:
-      OPPORTUNITIES_REV: ${{ needs.source.outputs.opportunities }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: actions/checkout@v4
         with:
           repository: dafuga/harbor-opportunities
-          ref: ${{ env.OPPORTUNITIES_REV }}
+          ref: 9cd9fc3928a4130ea7e28984e5f6b758c8fd27eb
           path: opportunities
-          token: ${{ secrets.HARBOR_OPPORTUNITIES_TOKEN || github.token }}
+          token: ${{ secrets.HARBOR_OPPORTUNITIES_TOKEN }}
           persist-credentials: false
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-      - name: Build and test CLI
-        shell: bash
-        run: |
-          npm install --no-package-lock
+      - run: |
+          npm ci
           npm run compile
-          npm run check
-          node --test lib/*/*.test.js
       - name: Install Linux dependencies
         if: runner.os == 'Linux'
         run: |
@@ -101,19 +124,53 @@ jobs:
           name: harbor-evidence-${{ matrix.target }}
           path: runtime-evidence/
           if-no-files-found: error
-      - name: Package Node CLI
-        if: matrix.target == 'linux-x64'
-        run: |
-          mkdir -p cli-dist
-          npm pack --pack-destination cli-dist --ignore-scripts
-      - uses: actions/upload-artifact@v4
-        if: matrix.target == 'linux-x64'
+
+  node-linux-arm64:
+    if: github.event_name != 'pull_request' && (vars.HARBOR_NATIVE_ARTIFACTS == 'enabled' || startsWith(github.ref, 'refs/tags/v'))
+    runs-on: ubuntu-22.04-arm
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
         with:
-          name: harbor-cli-package
-          path: cli-dist/
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: dafuga/harbor
+          ref: fe4fa93c0f3104485af99ec350e71c7798fd89aa
+          path: node-source
+          token: ${{ secrets.HARBOR_NODE_SOURCE_TOKEN }}
+          submodules: recursive
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install node build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake git libcurl4-openssl-dev libgmp-dev libssl-dev ninja-build python3-numpy zlib1g-dev
+          git clone --branch 0.15.0 --depth 1 https://github.com/open-quantum-safe/liboqs.git "$RUNNER_TEMP/liboqs"
+          cmake -S "$RUNNER_TEMP/liboqs" -B "$RUNNER_TEMP/liboqs/build" -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
+            -DOQS_BUILD_ONLY_LIB=ON -DOQS_DIST_BUILD=ON
+          cmake --build "$RUNNER_TEMP/liboqs/build" --parallel 2
+          sudo cmake --install "$RUNNER_TEMP/liboqs/build"
+      - name: Build and verify the Linux ARM64 node
+        run: |
+          bash scripts/build-nodeos.sh node-source node-build node-dist -G Ninja
+          (cd node-dist && sha256sum --check nodeos-linux-arm64.sha256)
+          npm ci
+          npm run compile
+          sudo loginctl enable-linger "$(id -un)"
+          HARBOR_NODEOS_ARTIFACT="$PWD/node-dist/nodeos-linux-arm64" node scripts/node-smoke.mjs
+          sudo env HARBOR_NODEOS_ARTIFACT="$PWD/node-dist/nodeos-linux-arm64" "$(command -v node)" scripts/node-smoke.mjs --system
+      - uses: actions/upload-artifact@v4
+        with:
+          name: harbor-runtime-node-linux-arm64
+          path: node-dist/
           if-no-files-found: error
 
   windows:
+    if: github.event_name == 'workflow_dispatch' && inputs.qualify_windows
     needs: native
     runs-on: windows-2025
     timeout-minutes: 30
@@ -141,7 +198,7 @@ jobs:
         shell: pwsh
         run: |
           node -p process.version | Set-Content -Encoding ascii .ci-node-version
-          npm install --no-package-lock
+          npm ci
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           npm run compile
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
@@ -174,9 +231,9 @@ jobs:
           mkdir -p "$HOME/harbor-cli"
           tar --exclude=node_modules --exclude=.git -cf - . | tar -xf - -C "$HOME/harbor-cli"
           cd "$HOME/harbor-cli"
-          npm install --no-package-lock
+          npm ci
           npm run compile
-          node --test lib/*/*.test.js
+          npm test
           mkdir -p daemon-build
           install -m 755 runtime-dist/harbor-aiinferd-linux-x64 daemon-build/harbor-aiinferd
           export HARBOR_DAEMON_DIR="$PWD/daemon-build"
@@ -198,7 +255,7 @@ jobs:
           if-no-files-found: error
 
   release:
-    needs: [native, windows]
+    needs: [cli, native, node-linux-arm64]
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-24.04
     permissions:
@@ -220,7 +277,7 @@ jobs:
           TAG: ${{ github.ref_name }}
         run: |
           cd release
-          { cat SHASUMS256-*.txt; sha256sum *.tgz; } | sort > SHASUMS256.txt
+          { cat SHASUMS256-*.txt nodeos-linux-arm64.sha256; sha256sum *.tgz; } | sort > SHASUMS256.txt
           sha256sum --check SHASUMS256.txt
           rm SHASUMS256-*.txt
           gh release create "$TAG" ./* --verify-tag --generate-notes

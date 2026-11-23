@@ -35,6 +35,8 @@ config, and limits for installed services. Running services include a fresh
 `usage` sample with CPU cores, RSS, and any host-policy pause reason when available.
 `service logs --supervisor` reads
 startup failures. `doctor --strict` makes unsuccessful checks exit with status 1.
+Use `harbor agent init --account ACCOUNT` to create a private agent config and
+`harbor agent doctor --json` to inspect its configured local services.
 
 Artifacts use `<daemon>-darwin-arm64`, `-darwin-x64`, `-linux-arm64`, or
 `-linux-x64` suffixes and are verified against `SHASUMS256.txt`.
@@ -48,6 +50,10 @@ For a node peer use `harbor run nodeos --config config.ini --data-dir DATA`.
 Supply the intended chain's genesis for a fresh peer with `--genesis-json`.
 The node exposes loopback RPC on 8888 by default. Configure P2P listeners and
 peers in `config.ini`. Readiness uses `/v1/chain/get_info`.
+The Linux ARM64 build produces `nodeos-linux-arm64` with its SHA-256 and Harbor
+source revision. Use `--source github --version TAG` once that artifact is
+published, or use `--source url --binary-url URL --sha256 DIGEST` with a
+verified artifact served from a trusted location.
 
 ## Windows and Electron
 
@@ -64,7 +70,7 @@ WSL can suspend idle distributions, including ones with systemd services.
 Electron can use the service JSON interface above or own a foreground
 `harbor run aiinfer` process on macOS and Linux. Probe `/health` for readiness
 and send SIGTERM to stop the foreground process. Persist limits for new
-workloads with `harbor agent limits set --cpu 40 --gpu 40 --mem 40`, or pass
+workloads with `harbor agent limits set --cpu 50 --gpu 50 --mem 50`, or pass
 `--cpu-percent`, `--gpu-percent`, and `--memory-percent` for one run.
 Linux uses systemd quotas when available. macOS also applies background
 task policy and priority. The process-group monitor samples CPU and RSS,
@@ -82,8 +88,8 @@ harbor run aiinfer --model-profile auto
 
 New `aiinfer` configs default to the local OpenAI-compatible Ollama endpoint.
 Start Ollama and pull Qwen3 8B Q4_K_M in the same runtime environment.
-`harbor ai local-model --json` reports whether the estimated 5.7 GiB working set
-fits the configured memory budget. To manage Ollama in the same resource
+`harbor ai local-model --json` checks the 16 GiB host minimum and whether the
+estimated 5.7 GiB working set fits the configured budget. To manage Ollama in the same resource
 budget as Harbor, pass `--ollama /path/to/ollama` and use a free local backend
 port. Harbor sets parallel slots from the memory budget and uses an 8-bit KV
 cache for managed backends. GPU caps are applied through available backend
@@ -121,12 +127,29 @@ under these limits and require confirmed user inactivity.
 
 On a clean macOS or Linux host, install Node.js, the native daemon dependencies,
 and ImageMagick. On Windows do the runtime work inside a WSL2 Linux
-distribution with systemd enabled. Run `npm install`, then set
+distribution with systemd enabled. Run `npm ci`, then set
 `HARBOR_DAEMON_DIR` to the native build directory and `HARBOR_SMOKE_EVIDENCE` to
 an output directory before invoking `bash scripts/verify-runtime.sh`. Set
 `HARBOR_VERIFY_NODEOS=1` to exercise an installed native nodeos in an isolated
-local chain. `scripts/build-nodeos.sh` builds and checksums a native nodeos from
-an existing pinned Harbor checkout with its dependencies installed.
+local chain. To qualify the download path, set `HARBOR_NODEOS_ARTIFACT` to the
+absolute path of the build's versioned asset alongside its `.sha256` file.
+The smoke serves the asset on loopback and installs it with the provided digest.
+On Linux, also run `node scripts/node-smoke.mjs --system` as root with the
+same artifact path to verify the system service manager.
+
+`scripts/build-nodeos.sh` builds and checksums native nodeos from a pinned
+Harbor checkout with initialized submodules and the build dependencies installed.
+The Linux ARM64 workflow uses Ubuntu 22.04, static liboqs 0.15.0, and Ninja.
+Use `bash scripts/build-nodeos.sh /path/to/harbor node-build node-dist -G Ninja`
+to run the same build on a native ARM64 host or Linux ARM64 VM.
+
+The public CI matrix runs `npm ci`, compile, type checking, and the full CLI
+suite on macOS and Linux on both architectures. Trusted branch or manual runs
+can enable native artifacts by setting `HARBOR_NATIVE_ARTIFACTS=enabled`.
+Native builds use the repository's read-only `HARBOR_OPPORTUNITIES_TOKEN` and
+`HARBOR_NODE_SOURCE_TOKEN` secrets to fetch their respective pinned private
+sources. The build and smoke can run locally with the same checked-out sources.
+Windows WSL2 qualification is an optional manual job.
 
 `scripts/qwen-batched-bench.mjs` plans or runs Qwen3 8B Q4_K_M at batches
 1, 4, 8, 16, and 32, with 2K, 4K, and 8K contexts and q8 or f16 KV caches.
@@ -142,8 +165,8 @@ decode slots still depend on the 8 GiB RAM budget on a 16 GiB machine.
 
 - [x] Runtime CLI, launchd, systemd source, and Electron WSL2 contract.
 - [x] Service-daemon release matrix, nodeos build path, and offline evidence harness.
-- [x] macOS ARM64 launchd lifecycle, actual native daemon with managed test
-  backend, dual-process shutdown, and screenshot from the test transcript.
+- [x] macOS ARM64 launchd lifecycle, native daemon with managed test backend,
+  and dual-process shutdown.
 - [x] llama.cpp slot save, idle spill, pause, restore, and chat separation tests.
 - [ ] Linux x64/arm64, macOS x64, and Windows WSL2 build and lifecycle evidence.
 - [ ] Native Windows daemon port, host service integration, Job Objects, and ACL validation.
@@ -151,6 +174,4 @@ decode slots still depend on the 8 GiB RAM budget on a 16 GiB machine.
 - [ ] Actual Qwen weights and expert training, serving, throughput, and evaluation runs.
 - [ ] Real Qwen SSD resume timing and 16 GiB capacity evidence.
 
-The [macOS ARM64 smoke screenshot](evidence/macos-arm64.png) records the
-actual local test against an OpenAI-compatible fixture. The workflow uploads
-transcripts and screenshots from every runtime smoke job.
+The workflow uploads runtime smoke transcripts and transcript images.
