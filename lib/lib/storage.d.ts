@@ -115,6 +115,10 @@ export interface StorageDownloadOptions {
     marketContract?: string;
     storageContract?: string;
     expectedSha256?: string;
+    readReplica?: (url: URL) => Promise<{
+        status: number;
+        bytes: Buffer;
+    }>;
 }
 export interface StorageDownloadResult {
     content_hash: string;

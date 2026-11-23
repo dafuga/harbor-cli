@@ -18,4 +18,7 @@ export declare function openSolanaSigner(name: string): Promise<{
     sign(message: Buffer): Promise<Buffer>;
 }>;
 export declare function resolveAntelopeSigner(candidate: string | undefined, actor?: string): Promise<AntelopeSigner>;
+export declare function openAntelopeWorkerSigner(name: string): Promise<AntelopeSigner & {
+    close(): void;
+}>;
 export {};

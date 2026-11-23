@@ -26,4 +26,5 @@ declare class HarborSigningWallet extends AbstractWalletPlugin {
     }>;
 }
 export declare function walletPluginFor(keyOption: string | undefined, actor: string, url?: string, review?: TransactionReview): Promise<HarborSigningWallet>;
+export declare function walletPluginForSigner(signer: AntelopeSigner, url: string, review: TransactionReview): HarborSigningWallet;
 export {};
