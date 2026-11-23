@@ -173,7 +173,8 @@ export class AgentWorker {
     for (const run of runs) this.saveRun({...run, status: 'cancelled', detail}, 'run_cancelled', detail)
   }
 
-  async quote(id: string, message: unknown) {
+  async quote(id: string, message: unknown, replaceOpen: unknown = false) {
+    if (typeof replaceOpen !== 'boolean') throw new AgentError('Specify whether this replaces the open quote.')
     const agent = this.agent(id)
     this.requireActive(agent)
     const prompt = text(message, 'Message', 4000)
@@ -195,7 +196,7 @@ export class AgentWorker {
       this.store.run("DELETE FROM quotes WHERE json_extract(data, '$.expiresAt') <= ?", this.now())
       const quote: Quote = {...price, id: randomUUID(), agentId: id, revision: agent.revision, requestId,
         prompt, expiresAt: this.now() + QUOTE_TTL}
-      this.store.run(`
+      if (replaceOpen) this.store.run(`
         DELETE FROM quotes WHERE json_extract(data, '$.agentId') = ?
           AND NOT EXISTS (SELECT 1 FROM runs WHERE runs.id = json_extract(quotes.data, '$.requestId'))
       `, id)

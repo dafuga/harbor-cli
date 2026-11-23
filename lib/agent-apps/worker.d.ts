@@ -57,7 +57,7 @@ export declare class AgentWorker {
     saveAgent(id: string | undefined, input: unknown): Agent;
     setStatus(id: string, status: unknown): Agent;
     private cancelQueued;
-    quote(id: string, message: unknown): Promise<Quote>;
+    quote(id: string, message: unknown, replaceOpen?: unknown): Promise<Quote>;
     confirm(id: string): Run;
     cancelQuote(id: string): {
         agentId: string;

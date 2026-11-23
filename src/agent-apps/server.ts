@@ -67,7 +67,7 @@ export function workerServer(worker: AgentWorker, token: string) {
         if (!id && !action) return send(response, 201, worker.createAgent(data))
         if (id && !action) return send(response, 200, worker.saveAgent(id, data))
         if (id && action === 'status') return send(response, 200, worker.setStatus(id, data.status))
-        if (id && action === 'quote') return send(response, 200, await worker.quote(id, data.message))
+        if (id && action === 'quote') return send(response, 200, await worker.quote(id, data.message, data.replaceOpen))
         if (id && action === 'routines') return send(response, 201, worker.createRoutine(id, data))
       }
       if (request.method === 'POST' && id && !action) {
