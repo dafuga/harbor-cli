@@ -72,6 +72,7 @@ export function workerServer(worker: AgentWorker, token: string) {
       }
       if (request.method === 'POST' && id && !action) {
         if (collection === 'confirm') return send(response, 202, worker.confirm(id))
+        if (collection === 'cancel') return send(response, 200, worker.cancelQuote(id))
         if (collection === 'routines') return send(response, 200, worker.setRoutine(id, (await input(request)).enabled))
         if (collection === 'reconcile') return send(response, 200, await worker.reconcile(id))
       }

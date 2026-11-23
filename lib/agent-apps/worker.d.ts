@@ -38,16 +38,30 @@ export declare class AgentWorker {
             files: string[];
             secrets: string[];
         }[];
+        quotes: {
+            id: string;
+            agentId: string;
+            revision: number;
+            requestId: string;
+            prompt: string;
+            expiresAt: number;
+            maxCost: number;
+            deployment: string;
+        }[];
         routines: Routine[];
         runs: Run[];
         audit: AuditEntry[];
     };
+    private openQuotes;
     createAgent(input: unknown): Agent;
     saveAgent(id: string | undefined, input: unknown): Agent;
     setStatus(id: string, status: unknown): Agent;
     private cancelQueued;
     quote(id: string, message: unknown): Promise<Quote>;
     confirm(id: string): Run;
+    cancelQuote(id: string): {
+        agentId: string;
+    };
     createRoutine(agentId: string, input: unknown): {
         routine: Routine;
         token: string | undefined;
