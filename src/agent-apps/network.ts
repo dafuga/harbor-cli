@@ -80,7 +80,7 @@ export class HarborNetwork implements Network {
   readonly identity
 
   constructor(private readonly config: HarborConfig, private readonly signer: AntelopeSigner, private readonly transact = pushAction) {
-    this.models = config.models.map(({id, label}) => ({id, label}))
+    this.models = config.models.map(({id, label, kind}) => ({id, label, kind}))
     this.currency = config.currency
     this.identity = `${config.chainId}/${config.account}`
   }

@@ -35,6 +35,7 @@ export interface Routine extends RoutineInput {
 export interface Model {
   id: string
   label: string
+  kind?: 'flagship' | 'lora'
 }
 
 export interface Price {
