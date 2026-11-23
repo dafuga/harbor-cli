@@ -4,6 +4,7 @@ export interface HostState {
     hot: boolean | null;
     available_memory_bytes: number;
 }
+export declare function darwinReclaimableMemory(vmStats: string): number;
 export declare function hostState(): Promise<HostState>;
 export declare function hostPolicy(state: HostState, idleOnly: boolean): {
     blocked: string | undefined;

@@ -74,6 +74,20 @@ try {
   const running = await harbor('start', 'nodeos')
   assert.equal(running.healthy, true)
   assert.equal(running.system, scope.length > 0)
+  if (install.manager === 'systemd') {
+    const flags = scope.length ? ['--system'] : ['--user']
+    const {stdout} = await exec('systemctl', [...flags, 'show', '--property=ControlGroup', '--value', `${install.id}.service`])
+    assert.match(stdout.trim(), /^\//)
+    const cgroup = path.join('/sys/fs/cgroup', stdout.trim())
+    const [cpu, memory] = await Promise.all([
+      fs.readFile(path.join(cgroup, 'cpu.max'), 'utf8'),
+      fs.readFile(path.join(cgroup, 'memory.max'), 'utf8'),
+    ])
+    const [quota, interval] = cpu.trim().split(' ').map(Number)
+    assert.ok(Math.abs(quota / interval - running.limits.cpu_cores) < 0.02, cpu)
+    assert.ok(Number(memory) > 0 && Number(memory) <= running.limits.memory_bytes, memory)
+    console.log(`systemd limits verified: cpu.max=${cpu.trim()} memory.max=${memory.trim()}`)
+  }
   const endpoint = `http://127.0.0.1:${http.port}/v1/chain/get_info`
   const info = await fetch(endpoint).then((response) => response.json())
   assert.match(info.chain_id, /^[a-f0-9]{64}$/)
@@ -86,7 +100,10 @@ try {
   console.log(`${install.plan.target} ${install.manager} ${scope.length ? 'system' : 'user'}: nodeos install, RPC, restart, stop, and uninstall verified on an isolated chain${checksum ? ` (SHA-256 ${checksum})` : ''}`)
 } catch (error) {
   const log = await fs.readFile(path.join(home, 'logs', 'nodeos.log'), 'utf8').catch(() => '')
-  if (log) console.error(log.split('\n').slice(-35).join('\n'))
+  const supervisor = await fs.readFile(path.join(home, 'logs', 'nodeos.log.supervisor'), 'utf8').catch(() => '')
+  const diagnostics = log.split('\n').filter((line) => /\b(?:error|warn|fatal|abort|exception|shutdown)\b/i.test(line))
+  if (diagnostics.length) console.error(diagnostics.slice(0, 25).join('\n'))
+  if (supervisor) console.error(supervisor.split('\n').slice(-15).join('\n'))
   throw error
 } finally {
   try {

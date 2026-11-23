@@ -161,17 +161,7 @@ isolated Qwen3 8B Q4 llama-server with q8 KV, a temporary slot directory, and
 prefill, bytes per saved chat, and how many such prefixes fit on disk. Active
 decode slots still depend on the 8 GiB RAM budget on a 16 GiB machine.
 
-## Validation
-
-- [x] Runtime CLI, launchd, systemd source, and Electron WSL2 contract.
-- [x] Service-daemon release matrix, nodeos build path, and offline evidence harness.
-- [x] macOS ARM64 launchd lifecycle, native daemon with managed test backend,
-  and dual-process shutdown.
-- [x] llama.cpp slot save, idle spill, pause, restore, and chat separation tests.
-- [ ] Linux x64/arm64, macOS x64, and Windows WSL2 build and lifecycle evidence.
-- [ ] Native Windows daemon port, host service integration, Job Objects, and ACL validation.
-- [ ] Native Harbor nodeos Linux ARM64 build and verified release artifact.
-- [ ] Actual Qwen weights and expert training, serving, throughput, and evaluation runs.
-- [ ] Real Qwen SSD resume timing and 16 GiB capacity evidence.
-
-The workflow uploads runtime smoke transcripts and transcript images.
+The workflow uploads runtime smoke transcripts and transcript images. The
+inference smoke uses a loopback backend fixture. `node-smoke.mjs` checks node
+RPC readiness, restart, port closure, service removal, and the configured
+cgroup limits on Linux.

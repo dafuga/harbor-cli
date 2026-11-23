@@ -23,12 +23,20 @@ export interface HostState {
   available_memory_bytes: number
 }
 
+export function darwinReclaimableMemory(vmStats: string): number {
+  const pageSize = vmStats.match(/page size of (\d+) bytes/)?.[1]
+  const free = vmStats.match(/^Pages free:\s+(\d+)\.$/m)?.[1]
+  const fileBacked = vmStats.match(/^File-backed pages:\s+(\d+)\.$/m)?.[1]
+  return pageSize && free && fileBacked ? Number(pageSize) * (Number(free) + Number(fileBacked)) : 0
+}
+
 export async function hostState(): Promise<HostState> {
   if (process.platform === 'darwin') {
-    const [battery, thermal, input] = await Promise.all([
+    const [battery, thermal, input, memory] = await Promise.all([
       command('/usr/bin/pmset', ['-g', 'batt']),
       command('/usr/bin/pmset', ['-g', 'therm']),
       command('/usr/sbin/ioreg', ['-c', 'IOHIDSystem', '-r', '-d', '1']),
+      command('/usr/bin/vm_stat', []),
     ])
     const idle = input.match(/"HIDIdleTime"\s*=\s*(\d+)/)?.[1]
     const speed = thermal.match(/CPU_Speed_Limit\s*=\s*(\d+)/)?.[1]
@@ -36,7 +44,7 @@ export async function hostState(): Promise<HostState> {
       on_battery: battery ? battery.includes("'Battery Power'") : null,
       active: idle ? Number(idle) < 5 * 60 * 1e9 : null,
       hot: thermal ? (Boolean(speed && Number(speed) < 80) || /thermal pressure.*(?:serious|critical)/i.test(thermal)) : null,
-      available_memory_bytes: process.availableMemory() || os.freemem(),
+      available_memory_bytes: Math.max(process.availableMemory() || os.freemem(), darwinReclaimableMemory(memory)),
     }
   }
 
