@@ -86,6 +86,7 @@ export interface ToolReceipt {
 }
 
 export interface AuditEntry {
+  id?: number
   at: number
   event: string
   agentId?: string

@@ -75,6 +75,7 @@ export interface ToolReceipt {
     verification: string;
 }
 export interface AuditEntry {
+    id?: number;
     at: number;
     event: string;
     agentId?: string;

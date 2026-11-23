@@ -99,7 +99,7 @@ export class AgentWorker {
       quotes: this.openQuotes(id),
       routines: this.store.query<StoredRoutine>(`SELECT data FROM routines ${predicate} ORDER BY rowid`, id ?? null, id ?? null).map(publicRoutine),
       runs: this.store.query<Run>(`SELECT data FROM runs ${predicate} ORDER BY rowid DESC LIMIT 100`, id ?? null, id ?? null),
-      audit: this.store.query<AuditEntry>(`SELECT data FROM audit ${predicate} ORDER BY seq DESC LIMIT 200`, id ?? null, id ?? null),
+      audit: this.store.query<AuditEntry>(`SELECT json_set(data, '$.id', seq) AS data FROM audit ${predicate} ORDER BY seq DESC LIMIT 200`, id ?? null, id ?? null),
     }
   }
 
