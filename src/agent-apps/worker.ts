@@ -1,5 +1,6 @@
 import {createHash, randomBytes, randomUUID, timingSafeEqual} from 'node:crypto'
 import {AgentStore} from './store.js'
+import {reviewedAgentDefinition} from './definition.js'
 import {AgentError, alias, amount, hash, permissions, record, text} from './validation.js'
 import type {Agent, AgentStatus, AuditEntry, Network, Price, Quote, Routine, Run, ToolReceipt} from './types.js'
 
@@ -120,31 +121,56 @@ export class AgentWorker {
   }
 
   saveAgent(id: string | undefined, input: unknown) {
-    const data = record(input)
-    const model = text(data.model, 'Model', 80)
-    if (!this.network.models.some(item => item.id === model)) throw new AgentError('This model is unavailable on the runner.')
-    const perRun = amount(data.perRun, 'Per-run maximum')
-    const total = amount(data.total, 'Lifetime spending limit')
-    if (total < perRun) throw new AgentError('Lifetime spending limit must cover one run.')
+    const data = this.agentInput(record(input))
     return this.store.transaction(() => {
       const existing = id ? this.agent(id) : undefined
       if (existing?.status === 'killed') throw new AgentError('Agent is killed.', 409)
       if (existing) {
         const {paid, reserved} = this.store.totals(existing.id)
-        if (total < paid + reserved) throw new AgentError('Limit is below already paid and reserved spend.', 409)
+        if (data.total < paid + reserved) throw new AgentError('Limit is below already paid and reserved spend.', 409)
       }
       const agent: Agent = {
         id: existing?.id ?? randomUUID(), revision: (existing?.revision ?? 0) + 1,
-        name: text(data.name, 'Name', 120), instructions: text(data.instructions, 'Instructions', 4000),
-        model, status: existing?.status ?? 'active', perRun, total,
-        files: permissions(data.files, hash, 'HarborStore content hashes'),
-        secrets: permissions(data.secrets, alias, 'HarborVault secret aliases'),
+        ...data, status: existing?.status ?? 'active',
       }
       this.store.set('agents', agent)
       if (existing) this.cancelQueued(agent.id, 'Agent configuration changed.')
       this.log(existing ? 'agent_updated' : 'agent_created', {agentId: agent.id})
       return agent
     })
+  }
+
+  importAgent(input: unknown) {
+    const receipt = reviewedAgentDefinition(input)
+    return this.store.transaction(() => {
+      const key = `agent-definition:${receipt.artifactHash}`
+      const [existing] = this.store.query<string>('SELECT json_quote(value) AS data FROM metadata WHERE id = ?', key)
+      if (existing) return this.agent(existing)
+      const agent = this.store.set<Agent>('agents', {
+        ...this.agentInput(receipt.data), id: randomUUID(), revision: 1, status: 'paused',
+      })
+      this.store.run('INSERT INTO metadata (id, value) VALUES (?, ?)', key, agent.id)
+      this.log('agent_imported', {
+        agentId: agent.id,
+        detail: JSON.stringify({runId: receipt.runId, sourceCommit: receipt.sourceCommit,
+          artifactSha256: receipt.artifactHash, receiptSha256: receipt.receiptHash}),
+      })
+      return agent
+    })
+  }
+
+  private agentInput(data: Record<string, unknown>) {
+    const model = text(data.model, 'Model', 80)
+    if (!this.network.models.some(item => item.id === model)) throw new AgentError('This model is unavailable on the runner.')
+    const perRun = amount(data.perRun, 'Per-run maximum')
+    const total = amount(data.total, 'Lifetime spending limit')
+    if (total < perRun) throw new AgentError('Lifetime spending limit must cover one run.')
+    return {
+      name: text(data.name, 'Name', 120), instructions: text(data.instructions, 'Instructions', 4000),
+      model, perRun, total,
+      files: permissions(data.files, hash, 'HarborStore content hashes'),
+      secrets: permissions(data.secrets, alias, 'HarborVault secret aliases'),
+    }
   }
 
   setStatus(id: string, status: unknown) {

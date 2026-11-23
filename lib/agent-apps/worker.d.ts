@@ -55,6 +55,8 @@ export declare class AgentWorker {
     private openQuotes;
     createAgent(input: unknown): Agent;
     saveAgent(id: string | undefined, input: unknown): Agent;
+    importAgent(input: unknown): Agent;
+    private agentInput;
     setStatus(id: string, status: unknown): Agent;
     private cancelQueued;
     quote(id: string, message: unknown, replaceOpen?: unknown): Promise<Quote>;

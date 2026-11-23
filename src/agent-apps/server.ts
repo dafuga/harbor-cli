@@ -62,6 +62,9 @@ export function workerServer(worker: AgentWorker, token: string) {
       if (collection === 'state' && !action && request.method === 'GET') {
         return send(response, 200, worker.snapshot(id))
       }
+      if (collection === 'import' && !id && !action && request.method === 'POST') {
+        return send(response, 201, worker.importAgent(await input(request)))
+      }
       if (collection === 'agents' && request.method === 'POST') {
         const data = await input(request)
         if (!id && !action) return send(response, 201, worker.createAgent(data))

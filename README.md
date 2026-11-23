@@ -1065,3 +1065,20 @@ creation. POST `{"eventId":"your-unique-event-id"}` to
 `Authorization: Bearer …` header. Reusing an event ID returns the existing
 run. Pausing or killing an agent cancels queued work, stops further local
 actions, and leaves already accepted Harbor jobs available for settlement.
+
+### Import a reviewed Harness agent
+
+The Harness authoring host provides the exact receipt JSON and its independently reviewed file digest.
+The receipt uses schema `1`, profile `harbor-agent`, `runId`, `sourceCommit`, and
+`verification: { "build": "passed", "test": "passed" }`. Its `artifact` contains
+`format: "harbor-agent-definition"`, `sha256`, and `base64` of the definition JSON.
+The definition contains only `name`, `instructions`, the worker model ID `model`, `perRun`,
+`total`, HarborStore content hashes `files`, and HarborVault grant aliases `secrets`.
+Amounts are integer token minor units.
+
+Run `harbor agents import --receipt <file> --approved-sha256 <digest> --worker <origin> --account <name>`
+with the dedicated worker credential supplied by the approved secret store. The worker checks the
+reviewed digest and artifact digest, validates the fields against its model and grant policy, and records
+the run and source in the audit trail. Independently review the Harness run and obtain the approved
+digest from that review before importing. An import starts paused and reimporting the same definition
+returns its existing agent. Review its grants and limits before using Resume to activate it.
