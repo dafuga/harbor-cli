@@ -177,4 +177,4 @@ harbor run aiinfer --harbor-runtime /path/to/harbor/tools/local_inference/serve.
   --model-profile qwen3-8b-mlx --harbor-prefix /path/to/rendered-prefix.txt
 ```
 
-Choose `inkling-8` or `inkling-12` for an official-source Inkling GGUF and pass the Harbor-patched executable with `--llama-server`. Omit `--harbor-prefix` for requests without a shared system and tools prompt. The launcher determines concurrency from the selected model and the smaller of the configured memory and GPU budgets. `--dry-run --json` shows the resulting `managed_backend.parallel`.
+Choose `inkling-8` or `inkling-12` for an official-source Inkling GGUF and pass the Harbor-patched executable with `--llama-server`. Omit `--harbor-prefix` for requests without a shared system and tools prompt. The launcher determines concurrency from the selected model and the smaller of the configured memory and GPU budgets. `--dry-run --json` shows the resulting `managed_backend.parallel`. Override the profile tuning with `--harbor-prefill-batch` and, for Inkling, `--harbor-prefill-ubatch`.

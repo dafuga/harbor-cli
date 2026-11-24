@@ -43,6 +43,8 @@ export interface ManagedBackendOptions {
     harborPython?: string;
     harborWeights?: string;
     harborPrefix?: string;
+    harborPrefillBatch?: string;
+    harborPrefillUbatch?: string;
     ollama?: string;
     llamaServer?: string;
     baseGguf?: string;

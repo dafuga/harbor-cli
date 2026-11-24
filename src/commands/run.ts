@@ -27,6 +27,8 @@ export function addRuntimeOptions(command: Command): Command {
     .option('--harbor-python <path>', 'Python executable for the Harbor inference runtime')
     .option('--harbor-weights <path>', 'pinned local MLX snapshot or Inkling GGUF')
     .option('--harbor-prefix <path>', 'rendered system and tools prefix to prefill at model load')
+    .option('--harbor-prefill-batch <tokens>', 'override the Harbor profile prefill step or logical batch')
+    .option('--harbor-prefill-ubatch <tokens>', 'override the Harbor Inkling physical batch')
     .option('--ollama <path>', 'manage a local Ollama executable under the service resource limits')
     .option('--llama-server <path>', 'manage a local llama.cpp server under the service resource limits')
     .option('--base-gguf <path>', '4-bit base model file for --llama-server')
