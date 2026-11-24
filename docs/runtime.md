@@ -165,3 +165,16 @@ The workflow uploads runtime smoke transcripts and transcript images. The
 inference smoke uses a loopback backend fixture. `node-smoke.mjs` checks node
 RPC readiness, restart, port closure, service removal, and the configured
 cgroup limits on Linux.
+
+
+### Harbor local runtime on Apple Silicon
+
+To run the pinned Qwen3 8B MLX checkpoint, point `harbor run aiinfer` to the Python environment and `tools/local_inference/serve.py` in the Harbor checkout.
+
+```sh
+harbor run aiinfer --harbor-runtime /path/to/harbor/tools/local_inference/serve.py \
+  --harbor-python /path/to/venv/bin/python --harbor-weights /path/to/qwen/snapshot \
+  --model-profile qwen3-8b-mlx --harbor-prefix /path/to/rendered-prefix.txt
+```
+
+Choose `inkling-8` or `inkling-12` for an official-source Inkling GGUF and pass the Harbor-patched executable with `--llama-server`. Omit `--harbor-prefix` for requests without a shared system and tools prompt. The launcher determines concurrency from the selected model and the smaller of the configured memory and GPU budgets. `--dry-run --json` shows the resulting `managed_backend.parallel`.

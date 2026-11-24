@@ -6,8 +6,8 @@ import {configuredLimits} from '../lib/resource-limits.js'
 
 export function addLocalModelCommand(ai: Command): void {
   ai.command('local-model')
-    .description('Show the Qwen model and expert adapter base for local inference')
-    .option('--model-profile <profile>', 'auto or flagship', 'auto')
+    .description('Show the selected local inference model profile')
+    .option('--model-profile <profile>', 'auto, flagship, qwen3-8b-mlx, inkling-8, or inkling-12', 'auto')
     .option('--json', 'print JSON')
     .action(async (options: {modelProfile: string; json?: boolean}) => {
       const {memory_bytes} = await configuredLimits()

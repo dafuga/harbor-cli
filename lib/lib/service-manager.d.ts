@@ -51,7 +51,7 @@ export declare function serviceStatus(service: ServiceRuntime, system?: boolean)
     log: string;
     config: string;
     backend: {
-        engine: "ollama" | "llama.cpp";
+        engine: "mlx" | "llama.cpp" | "ollama";
         model: string;
         parallel: number;
     } | undefined;
@@ -82,7 +82,7 @@ export declare function controlService(service: ServiceRuntime, action: 'start' 
     log: string;
     config: string;
     backend: {
-        engine: "ollama" | "llama.cpp";
+        engine: "mlx" | "llama.cpp" | "ollama";
         model: string;
         parallel: number;
     } | undefined;
