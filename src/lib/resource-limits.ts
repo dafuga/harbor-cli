@@ -112,7 +112,15 @@ export function watchProcessGroups(
 
   async function sample(): Promise<void> {
     try {
-      const {stdout} = await exec('/bin/ps', ['-A', '-o', 'pid=,pgid=,rss=,time='], {timeout: 2000, maxBuffer: 4 * 1024 * 1024})
+      const readProcesses = () => exec('/bin/ps', ['-A', '-o', 'pid=,pgid=,rss=,time='], {
+        timeout: 2000, maxBuffer: 4 * 1024 * 1024,
+      })
+      const {stdout} = await readProcesses().catch((error) => {
+        // A loaded host can delay ps. Retry one timed-out sample without
+        // resetting CPU accounting or bypassing the next memory check.
+        if (cancelled || !error.killed || error.signal !== 'SIGTERM') throw error
+        return readProcesses()
+      })
       if (cancelled) return
       const pids = groups()
       let rss = 0

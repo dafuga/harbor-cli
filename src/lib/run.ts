@@ -224,7 +224,7 @@ async function runtimeConfig(config: string, service: ServiceRuntime, options: H
   }
   const configuredBackend = (Object.keys(BACKEND_FIELDS) as Array<keyof BackendOptions>)
     .some((key) => options[key] !== undefined || process.env[BACKEND_FIELDS[key][1]] !== undefined)
-  const profileName = options.modelProfile ?? (!existing && service.name === 'aiinfer' && (!configuredBackend || options.ollama || options.llamaServer) ? 'auto' : undefined)
+  const profileName = options.modelProfile ?? (options.harborRuntime ? 'qwen3-8b-mlx' : undefined) ?? (!existing && service.name === 'aiinfer' && (!configuredBackend || options.ollama || options.llamaServer) ? 'auto' : undefined)
   const modelProfile = profileName ? localModel(profileName, os.totalmem(), limits.memory_bytes) : undefined
   const profileDefaults: BackendOptions = modelProfile ? {
     backendEndpoint: modelProfile.backend_endpoint,
@@ -407,7 +407,7 @@ async function backendEngine(backend: ManagedBackend): Promise<BackendEngine> {
 }
 
 async function waitForBackend(backend: BackendEngine, stopped: () => boolean): Promise<void> {
-  const deadline = Date.now() + 75_000
+  const deadline = Date.now() + (backend.startupTimeoutMs ?? 75_000)
   const expected = backend.model.toLowerCase()
   while (Date.now() < deadline && !stopped()) {
     const headers = backend.key ? {Authorization: `Bearer ${backend.key}`} : undefined

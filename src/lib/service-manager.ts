@@ -260,7 +260,8 @@ export async function controlService(service: ServiceRuntime, action: 'start' | 
       if (spec.manager === 'launchd') await managerCommand(spec.manager, ['bootstrap', domain(), spec.definition])
       else await managerCommand(spec.manager, ['start', `${spec.id}.service`], spec.system)
     }
-    await waitForHealth(plan, undefined, plan.managed_backend || plan.service === 'nodeos' ? 90_000 : 15_000).catch((error: Error) => {
+    const startup = plan.managed_backend?.startupTimeoutMs ?? (plan.managed_backend || plan.service === 'nodeos' ? 75_000 : 0)
+    await waitForHealth(plan, undefined, startup + 15_000).catch((error: Error) => {
       throw new Error(`${error.message}. Run harbor service logs ${service.name} --supervisor`, {cause: error})
     })
   }
