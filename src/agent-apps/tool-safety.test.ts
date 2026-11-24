@@ -14,6 +14,7 @@ test('owner must review the exact model-proposed Vault action before the real wo
   const home = await mkdtemp(join(tmpdir(), 'harbor-tool-safety-'))
   const events: string[] = []
   const text = 'Approve this fixture message only'
+  let proposals: unknown[] = [{name: 'use_secret', resource: 'fixture-key', message: text}]
   const network: Network = {
     identity: 'fixture/owner',
     currency: {symbol: 'TEST', precision: 4},
@@ -24,7 +25,7 @@ test('owner must review the exact model-proposed Vault action before the real wo
       submitted('8')
       return {
         text: 'Fixture answer', paid: 0,
-        calls: [{name: 'use_secret', resource: 'fixture-key', message: text}],
+        calls: proposals,
       }
     },
     async reconcile() { return 0 },
@@ -68,16 +69,8 @@ test('owner must review the exact model-proposed Vault action before the real wo
   const run = worker.confirm((await worker.quote(agent.id, 'Check the fixture')).id)
   running = worker.tick()
   assert.equal((await request(reviewPath, 'GET', '')).status, 401)
-  let reviews = []
-  for (let i = 0; i < 30 && reviews.length === 0; i++) {
-    const response = await request(reviewPath)
-    assert.equal(response.status, 200)
-    reviews = (await response.json()).reviews
-    if (!reviews.length) await delay(10)
-  }
-  assert.equal(reviews.length, 1)
+  const [review] = await waitForReviews(() => request(reviewPath))
   assert.deepEqual(events, [])
-  const [review] = reviews
   assert.equal(review.action, 'credential-use')
   assert.equal(review.summary, 'Sign this text with HarborVault grant fixture-key')
   assert.equal(review.content, text)
@@ -88,12 +81,29 @@ test('owner must review the exact model-proposed Vault action before the real wo
   await running
   assert.deepEqual(events, ['verified', 'signed'])
 
+  const declined = worker.confirm((await worker.quote(agent.id, 'Review another fixture')).id)
+  running = worker.tick()
+  const [secondReview] = await waitForReviews(() => request(reviewPath))
+  assert.equal((await request(`/tool-reviews/${secondReview.id}/decline`, 'POST')).status, 202)
+  await running
+  assert.deepEqual(events, ['verified', 'signed'])
+  assert.equal(worker.snapshot(agent.id).runs.find(item => item.id === declined.id)?.status, 'blocked')
+
+  proposals = [{name: 'publish', resource: 'unknown-destination'}]
+  const unknown = worker.confirm((await worker.quote(agent.id, 'Check an unregistered tool')).id)
+  await worker.tick()
+  const refused = worker.snapshot(agent.id)
+  assert.equal(refused.runs.find(item => item.id === unknown.id)?.status, 'blocked')
+  assert.ok(refused.audit.some(item => item.runId === unknown.id &&
+    item.event === 'tool_policy_denied' && item.detail === 'unknown-tool'))
+  assert.deepEqual(events, ['verified', 'signed'])
+
   worker.close()
   const reopened = new AgentWorker(file, 'Restarted fixture', network)
   try {
     const {runs, audit} = reopened.snapshot(agent.id)
     assert.equal(runs.find(item => item.id === run.id)?.status, 'completed')
-    const policy = audit.filter(item => item.event.startsWith('tool_policy_')).reverse()
+    const policy = audit.filter(item => item.runId === run.id && item.event.startsWith('tool_policy_')).reverse()
     assert.deepEqual(policy.map(item => item.event), [
       'tool_policy_requested', 'tool_policy_held', 'tool_policy_requested',
       'tool_policy_reserved', 'tool_policy_completed',
@@ -105,3 +115,14 @@ test('owner must review the exact model-proposed Vault action before the real wo
     reopened.close()
   }
 })
+
+async function waitForReviews(read: () => Promise<Response>) {
+  for (let i = 0; i < 30; i++) {
+    const response = await read()
+    assert.equal(response.status, 200)
+    const {reviews} = await response.json()
+    if (reviews.length) return reviews
+    await delay(10)
+  }
+  throw new Error('Expected a held worker tool review.')
+}
