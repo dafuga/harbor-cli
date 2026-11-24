@@ -27,7 +27,7 @@
     "node": ">=20.18.0"
   },
   "dependencies": {
-    "@dafuga01/harness-agent-safety": "file:vendor/harness-agent-safety-cce2be9407.tgz",
+    "@dafuga01/harness-agent-safety": "file:vendor/harness-agent-safety-35619814da.tgz",
     "@solana/transaction-messages": "6.4.0",
     "@solana/transactions": "6.4.0",
     "@wharfkit/antelope": "^1.2.0",
