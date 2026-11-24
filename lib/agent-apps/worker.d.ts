@@ -38,6 +38,18 @@ export declare class AgentWorker {
         }[];
         routines: Routine[];
         runs: Run[];
+        quotes: {
+            id: string;
+            agentId: string;
+            revision: number;
+            requestId: string;
+            prompt: string;
+            model?: string;
+            modelRevision?: string;
+            expiresAt: number;
+            maxCost: number;
+            deployment: string;
+        }[];
         audit: AuditEntry[];
         toolReviews?: (import("@dafuga01/harness-agent-safety").AgentToolReview & {
             agentId: string;
@@ -66,6 +78,7 @@ export declare class AgentWorker {
     private executionAgent;
     private taskPrompt;
     private modelRevision;
+    private openQuotes;
     createAgent(input: unknown): Agent;
     saveAgent(id: string | undefined, input: unknown): Agent;
     setFeedback(id: string, input: unknown): RunFeedback | {
@@ -75,11 +88,16 @@ export declare class AgentWorker {
     clearFeedback(agentId: string): {
         deleted: boolean;
     };
+    importAgent(input: unknown): Agent;
+    private agentInput;
     setStatus(id: string, status: unknown): Agent;
     private cancelQueued;
     refreshModels(): Promise<void>;
-    quote(id: string, message: unknown): Promise<Quote>;
+    quote(id: string, message: unknown, replaceOpen?: unknown): Promise<Quote>;
     confirm(id: string): Run;
+    cancelQuote(id: string): {
+        agentId: string;
+    };
     createRoutine(agentId: string, input: unknown): {
         routine: Routine;
         token: string | undefined;

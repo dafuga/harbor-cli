@@ -71,6 +71,7 @@ export interface Model {
     id: string;
     label: string;
     revision?: string;
+    kind?: 'flagship' | 'lora';
 }
 export interface Price {
     maxCost: number;
@@ -121,6 +122,7 @@ export interface ToolReceipt {
     verification: string;
 }
 export interface AuditEntry {
+    id?: number;
     at: number;
     event: string;
     agentId?: string;

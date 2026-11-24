@@ -6,6 +6,7 @@ import {Command} from 'commander'
 import {openAntelopeWorkerSigner} from '../lib/wallet.js'
 import {harborConfig, localAgentConfig} from './config.js'
 import {LocalAgentNetwork} from './local.js'
+import {addImportCommand} from './import-command.js'
 import {HarborNetwork} from './network.js'
 import {workerServer} from './server.js'
 import {AgentWorker} from './worker.js'
@@ -43,6 +44,7 @@ export function createAgentAppsCommand() {
         signer.close()
       }
     })
+  addImportCommand(agents)
   return agents
 }
 

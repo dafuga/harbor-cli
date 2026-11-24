@@ -11,6 +11,7 @@ export declare class HarborNetwork implements Network {
         id: string;
         label: string;
         revision: string;
+        kind: "flagship" | "lora";
     }[];
     readonly currency: {
         symbol: string;

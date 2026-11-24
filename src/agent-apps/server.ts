@@ -68,12 +68,15 @@ export function workerServer(worker: AgentWorker, token: string) {
           return send(response, 202, worker.decideToolReview(id, action === 'approve'))
         }
       }
+      if (collection === 'import' && !id && !action && request.method === 'POST') {
+        return send(response, 201, worker.importAgent(await input(request)))
+      }
       if (collection === 'agents' && request.method === 'POST') {
         const data = await input(request)
         if (!id && !action) return send(response, 201, worker.createAgent(data))
         if (id && !action) return send(response, 200, worker.saveAgent(id, data))
         if (id && action === 'status') return send(response, 200, worker.setStatus(id, data.status))
-        if (id && action === 'quote') return send(response, 200, await worker.quote(id, data.message))
+        if (id && action === 'quote') return send(response, 200, await worker.quote(id, data.message, data.replaceOpen))
         if (id && action === 'clear-feedback') return send(response, 200, worker.clearFeedback(id))
         if (id && action === 'routines') return send(response, 201, worker.createRoutine(id, data))
       }
@@ -85,6 +88,7 @@ export function workerServer(worker: AgentWorker, token: string) {
           await worker.refreshModels()
           return send(response, 202, worker.confirm(id))
         }
+        if (collection === 'cancel') return send(response, 200, worker.cancelQuote(id))
         if (collection === 'routines') return send(response, 200, worker.setRoutine(id, (await input(request)).enabled))
         if (collection === 'reconcile') return send(response, 200, await worker.reconcile(id))
       }

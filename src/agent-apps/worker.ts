@@ -5,6 +5,7 @@ import {AgentStore} from './store.js'
 import {ToolReviews} from './tool-reviews.js'
 import {workerToolDispatch} from './tool-safety.js'
 import {toolSafetyJournal} from './tool-safety-journal.js'
+import {reviewedAgentDefinition} from './definition.js'
 import {AgentError, alias, amount, hash, permissions, record, text} from './validation.js'
 import type {Agent, AgentStatus, AuditEntry, Network, Price, Quote, Routine, Run, RunFeedback, ToolReceipt} from './types.js'
 
@@ -117,7 +118,8 @@ export class AgentWorker {
       agents: agents.map(agent => ({...this.executionAgent(agent), ...this.store.totals(agent.id)})),
       routines: this.store.query<StoredRoutine>(`SELECT data FROM routines ${predicate} ORDER BY rowid`, id ?? null, id ?? null).map(publicRoutine),
       runs,
-      audit: this.store.query<AuditEntry>(`SELECT data FROM audit ${predicate} ORDER BY seq DESC LIMIT 200`, id ?? null, id ?? null),
+      quotes: this.openQuotes(id),
+      audit: this.store.query<AuditEntry>(`SELECT json_set(data, '$.id', seq) AS data FROM audit ${predicate} ORDER BY seq DESC LIMIT 200`, id ?? null, id ?? null),
     }
   }
 
@@ -147,6 +149,19 @@ export class AgentWorker {
 
   private modelRevision(agent: Agent) {
     return this.network.models.find(item => item.id === agent.model)?.revision
+  }
+
+  private openQuotes(agentId?: string) {
+    return this.store.query<Quote & {input: string}>(`
+      SELECT quotes.data FROM quotes
+      JOIN agents ON agents.id = json_extract(quotes.data, '$.agentId')
+      WHERE (? IS NULL OR agents.id = ?)
+        AND json_extract(quotes.data, '$.expiresAt') > ?
+        AND json_extract(agents.data, '$.status') = 'active'
+        AND json_extract(quotes.data, '$.revision') = json_extract(agents.data, '$.revision')
+        AND NOT EXISTS (SELECT 1 FROM runs WHERE runs.id = json_extract(quotes.data, '$.requestId'))
+      ORDER BY quotes.rowid DESC
+    `, agentId ?? null, agentId ?? null, this.now()).map(({input, ...quote}) => quote)
   }
 
   createAgent(input: unknown) {
@@ -268,6 +283,40 @@ export class AgentWorker {
     return {deleted: true}
   }
 
+  importAgent(input: unknown) {
+    const receipt = reviewedAgentDefinition(input)
+    return this.store.transaction(() => {
+      const key = `agent-definition:${receipt.artifactHash}`
+      const [existing] = this.store.query<string>('SELECT json_quote(value) AS data FROM metadata WHERE id = ?', key)
+      if (existing) return this.agent(existing)
+      if (this.network.localOnly) throw new AgentError('Agent definition import needs a network worker.', 403)
+      const agent = this.store.set<Agent>('agents', {
+        ...this.agentInput(receipt.data), id: randomUUID(), revision: 1, status: 'paused',
+      })
+      this.store.run('INSERT INTO metadata (id, value) VALUES (?, ?)', key, agent.id)
+      this.log('agent_imported', {
+        agentId: agent.id,
+        detail: JSON.stringify({runId: receipt.runId, sourceCommit: receipt.sourceCommit,
+          artifactSha256: receipt.artifactHash, receiptSha256: receipt.receiptHash}),
+      })
+      return agent
+    })
+  }
+
+  private agentInput(data: Record<string, unknown>) {
+    const model = text(data.model, 'Model', 80)
+    if (!this.network.models.some(item => item.id === model)) throw new AgentError('This model is unavailable on the runner.')
+    const perRun = amount(data.perRun, 'Per-run maximum')
+    const total = amount(data.total, 'Lifetime spending limit')
+    if (total < perRun) throw new AgentError('Lifetime spending limit must cover one run.')
+    return {
+      name: text(data.name, 'Name', 120), instructions: text(data.instructions, 'Instructions', 4000),
+      model, perRun, total,
+      files: permissions(data.files, hash, 'HarborStore content hashes'),
+      secrets: permissions(data.secrets, alias, 'HarborVault secret aliases'),
+    }
+  }
+
   setStatus(id: string, status: unknown) {
     if (status !== 'active' && status !== 'paused' && status !== 'killed') throw new AgentError('Invalid agent status.')
     const agent = this.store.transaction(() => {
@@ -298,7 +347,8 @@ export class AgentWorker {
     await this.network.refreshModels?.()
   }
 
-  async quote(id: string, message: unknown) {
+  async quote(id: string, message: unknown, replaceOpen: unknown = false) {
+    if (typeof replaceOpen !== 'boolean') throw new AgentError('Specify whether this replaces the open quote.')
     await this.refreshModels()
     const agent = this.executionAgent(this.agent(id))
     this.requireActive(agent)
@@ -323,6 +373,10 @@ export class AgentWorker {
         prompt, expiresAt: this.now() + QUOTE_TTL,
         ...(agent.specialty ? {model: agent.model, modelRevision: this.modelRevision(agent)} : {}),
       }
+      if (replaceOpen) this.store.run(`
+        DELETE FROM quotes WHERE json_extract(data, '$.agentId') = ?
+          AND NOT EXISTS (SELECT 1 FROM runs WHERE runs.id = json_extract(quotes.data, '$.requestId'))
+      `, id)
       this.store.set('quotes', {...quote, input})
       this.log('quote_issued', {agentId: id, detail: String(price.maxCost)})
       return quote
@@ -347,8 +401,24 @@ export class AgentWorker {
     })
   }
 
+  cancelQuote(id: string) {
+    return this.store.transaction(() => {
+      const quote = this.store.get<Quote>('quotes', id)
+      if (!quote || quote.expiresAt <= this.now() || this.store.get<Run>('runs', quote.requestId)) {
+        throw new AgentError('Quote is no longer open.', 409)
+      }
+      this.store.run('DELETE FROM quotes WHERE id = ?', id)
+      this.log('quote_cancelled', {agentId: quote.agentId})
+      return {agentId: quote.agentId}
+    })
+  }
+
   createRoutine(agentId: string, input: unknown) {
     const data = record(input)
+    if (data.enabled !== undefined && typeof data.enabled !== 'boolean') {
+      throw new AgentError('Specify whether the routine is enabled.')
+    }
+    const enabled = data.enabled !== false
     const kind = data.kind
     if (kind !== 'interval' && kind !== 'trigger') throw new AgentError('Invalid routine kind.')
     const intervalMinutes = kind === 'interval' ? amount(data.intervalMinutes, 'Interval') : undefined
@@ -364,7 +434,7 @@ export class AgentWorker {
       const routine: StoredRoutine = {
         id: randomUUID(), agentId, kind, intervalMinutes, maxCost,
         name: text(data.name, 'Name', 120), prompt: text(data.prompt, 'Prompt', 4000),
-        enabled: true, nextAt: intervalMinutes ? this.now() + intervalMinutes * MINUTE : null,
+        enabled, nextAt: enabled && intervalMinutes ? this.now() + intervalMinutes * MINUTE : null,
         credential: token ? digest(token).toString('hex') : undefined,
       }
       this.store.set('routines', routine)

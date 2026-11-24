@@ -72,6 +72,7 @@ export interface Model {
   id: string
   label: string
   revision?: string
+  kind?: 'flagship' | 'lora'
 }
 
 export interface Price {
@@ -128,6 +129,7 @@ export interface ToolReceipt {
 }
 
 export interface AuditEntry {
+  id?: number
   at: number
   event: string
   agentId?: string

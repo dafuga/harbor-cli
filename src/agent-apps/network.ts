@@ -73,7 +73,7 @@ export class HarborNetwork implements Network {
   private readonly acceptedSpecialties = new Map<string, string>()
 
   constructor(private readonly config: HarborConfig, private readonly signer: AntelopeSigner, private readonly transact = pushAction) {
-    this.models = config.models.filter(model => !model.specialty).map(({id, label, revision}) => ({id, label, revision}))
+    this.models = config.models.filter(model => !model.specialty).map(({id, label, revision, kind}) => ({id, label, revision, kind}))
     this.baseModel = config.models.find(model => model.kind === 'flagship')!.id
     this.currency = config.currency
     this.identity = `${config.chainId}/${config.account}`
@@ -137,7 +137,7 @@ export class HarborNetwork implements Network {
       if (!current || weights?.content_hash !== specialty.adapter || evaluation?.content_hash !== specialty.receipt ||
           weightsId === '0' || evaluationId === '0') continue
       this.acceptedSpecialties.set(specialty.id + ':' + specialty.version, model.id)
-      this.models.push({id: model.id, label: model.label, revision: model.revision})
+      this.models.push({id: model.id, label: model.label, revision: model.revision, kind: model.kind})
     }
   }
 
