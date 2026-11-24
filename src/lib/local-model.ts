@@ -67,6 +67,7 @@ export interface ManagedBackendOptions {
   harborPython?: string
   harborWeights?: string
   harborPrefix?: string
+  harborContext?: string
   harborPrefillBatch?: string
   harborPrefillUbatch?: string
   ollama?: string
@@ -123,6 +124,7 @@ async function planHarborRuntime(
   const args = [
     path.resolve(options.harborRuntime!), '--profile', name, '--weights', path.resolve(options.harborWeights),
     '--port', url.port, '--memory-mib', String(budget),
+    ...(options.harborContext ? ['--context', options.harborContext] : []),
     ...(options.harborPrefix ? ['--prefix-file', path.resolve(options.harborPrefix)] : []),
     ...(options.harborPrefillBatch ? ['--prefill-batch', options.harborPrefillBatch] : []),
     ...(options.harborPrefillUbatch ? ['--prefill-ubatch', options.harborPrefillUbatch] : []),
@@ -147,7 +149,7 @@ export async function planManagedBackend(
   dryRun: boolean,
 ): Promise<ManagedBackend | undefined> {
   if (!options.harborRuntime && (options.harborPython || options.harborWeights || options.harborPrefix ||
-      options.harborPrefillBatch || options.harborPrefillUbatch)) {
+      options.harborContext || options.harborPrefillBatch || options.harborPrefillUbatch)) {
     throw new Error('the Harbor runtime options require --harbor-runtime')
   }
   if (!options.harborRuntime && !options.ollama && !options.llamaServer && !options.baseGguf && !options.expertGguf) return undefined
