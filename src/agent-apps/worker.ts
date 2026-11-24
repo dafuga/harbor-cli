@@ -2,6 +2,9 @@ import {createHash, randomBytes, randomUUID, timingSafeEqual} from 'node:crypto'
 import {SPECIALTIES, specialtyManifest} from './specialties.js'
 import {FEEDBACK_POLICY} from './types.js'
 import {AgentStore} from './store.js'
+import {ToolReviews} from './tool-reviews.js'
+import {workerToolDispatch} from './tool-safety.js'
+import {toolSafetyJournal} from './tool-safety-journal.js'
 import {AgentError, alias, amount, hash, permissions, record, text} from './validation.js'
 import type {Agent, AgentStatus, AuditEntry, Network, Price, Quote, Routine, Run, RunFeedback, ToolReceipt} from './types.js'
 
@@ -44,6 +47,7 @@ function taskPrompt(agent: Agent, runId: string, prompt: string, history: Run[],
 
 export class AgentWorker {
   private readonly store: AgentStore
+  private readonly toolReviews = new ToolReviews()
   private readonly active = new Map<string, {agentId: string; controller: AbortController}>()
   private sweeping = false
 
@@ -103,6 +107,7 @@ export class AgentWorker {
       models: this.network.models,
       specialties: SPECIALTIES,
       feedbackPolicy: FEEDBACK_POLICY,
+      ...(id ? {toolReviews: this.toolReviews.forAgent(id, this.now())} : {}),
       feedback: this.store.query<RunFeedback>(
         `SELECT feedback.data FROM feedback JOIN (
            SELECT id FROM runs ${predicate} ORDER BY rowid DESC LIMIT 100
@@ -114,6 +119,15 @@ export class AgentWorker {
       runs,
       audit: this.store.query<AuditEntry>(`SELECT data FROM audit ${predicate} ORDER BY seq DESC LIMIT 200`, id ?? null, id ?? null),
     }
+  }
+
+  pendingToolReviews(agentId: string) {
+    this.agent(agentId)
+    return this.toolReviews.forAgent(agentId, this.now())
+  }
+
+  decideToolReview(id: string, approved: boolean) {
+    return this.toolReviews.decide(id, approved, this.now())
   }
 
   private executionAgent(agent: Agent): Agent {
@@ -547,23 +561,19 @@ export class AgentWorker {
       const {inferId} = this.run(original.id)
       if (!inferId && (!this.network.localOnly || delivery.calls.length)) throw new Error('Inference receipt is missing.')
       this.store.transaction(() => this.log('inference_delivered', {agentId: agent.id, runId: original.id, detail: inferId}))
-      for (const call of delivery.calls) {
+      if (delivery.calls.length) {
         if (!inferId) throw new Error('Tool calls require an inference receipt.')
-        assertActive()
-        const permitted = call.name === 'read_file' ? agent.files.includes(call.resource) : agent.secrets.includes(call.resource)
-        if (!permitted) throw new AgentError('Agent lacks permission for a proposed tool.', 403)
-        this.store.transaction(() => this.log('tool_verification_requested', {
-          agentId: agent.id, runId: original.id, detail: call.name,
-        }))
-        const verification = await this.network.verify(call, {runId: original.id, inferId, prompt, response: result}, signal)
-        if (!hash(verification)) throw new AgentError('Independent tool verification failed.', 403)
-        assertActive()
-        this.store.transaction(() => this.log('tool_verified', {agentId: agent.id, runId: original.id, detail: verification}))
-        const output = call.name === 'read_file'
-          ? await this.network.readFile(call.resource, signal)
-          : await this.network.useSecret(call.resource, call.message!, {runId: original.id, assertActive}, signal)
-        tools.push({name: call.name, resource: call.resource, result: output, verification})
-        this.store.transaction(() => this.log('tool_executed', {agentId: agent.id, runId: original.id, detail: call.name}))
+        const dispatch = workerToolDispatch({
+          network: this.network, runId: original.id, inferId, prompt, response: result, signal, assertActive,
+          journal: toolSafetyJournal(this.store, original.id), reviews: this.toolReviews, now: this.now,
+          agent: () => this.agent(agent.id),
+          declined: () => this.log('tool_review_declined_or_expired', {agentId: agent.id, runId: original.id}),
+        })
+        for (const call of delivery.calls) {
+          const receipt = await dispatch(call)
+          tools.push(receipt)
+          this.log('tool_executed', {agentId: agent.id, runId: original.id, detail: receipt.name})
+        }
       }
       assertActive()
       this.finish(original.id, 'completed', paid, result, tools)

@@ -1089,16 +1089,33 @@ program checkpoint. The specialty uses the base when no configured candidate
 is approved. If the registry changes after a quote, the worker requires a
 fresh quote before committing any spend.
 
-Tool calls are proposals until the worker checks the agent's exact permission
-and obtains a matching verdict from an independent operator-selected
-checker. Configure its HTTPS or loopback endpoint in `checker` and, if needed,
-set `HARBOR_AGENT_CHECKER_TOKEN` in the worker secret environment. The checker
-receives `kind: "harbor.ai.route_verification"`, `task: "verify_agent_tool_call"`,
-the input/output, the exact `tool_call`, and `call_hash`. It must return
-`{"approved":true,"call_hash":"<same hash>"}` after checking the call against
-the original request. When the checker is unavailable or rejects the call,
-the worker records the error and blocks tool execution. Inference fees
-follow the chain's delivery and settlement rules.
+All model tool calls pass through the pinned Harness agent safety runtime before
+the worker contacts the checker or tool adapter. The worker intersects its
+versioned specialty tools with the owner's exact grants and limits dispatch
+to 16 calls per agent per minute. Model text cannot approve an action.
+The worker records ordered policy decisions in the owner-visible activity log.
+The verifier still checks each dispatched call and its inference receipt.
+Configure the independent checker endpoint in `checker` and, if needed, set
+`HARBOR_AGENT_CHECKER_TOKEN` in the worker secret environment. It receives the
+input, output, exact `tool_call` and `call_hash` in a
+`harbor.ai.route_verification` request. It must return
+`{"approved":true,"call_hash":"<same hash>"}`. Failed or unavailable
+verification blocks tool execution.
+
+The owner must separately approve each Vault signing request. The pending
+review appears in the owner-authenticated agent state and at
+`GET /v1/tool-reviews/:agentId`. Confirm or decline with
+`POST /v1/tool-reviews/:reviewId/approve` or `/decline`. The owner sees the
+exact message, which is held in live worker memory for up to five minutes.
+A worker restart or revoked run invalidates the review. Decisions, dispatch
+reservations and outcomes persist in the append-only SQLite journal. The
+activity log omits messages, Vault grant identifiers and private fingerprints.
+
+The worker installs the revision-pinned Harness safety artifact in `vendor/`
+as a bundled dependency. Its manifest records the exact Harness source
+revision. The SDK contains the Node ESM bundle of
+`src/services/agents-providers/AgentToolSafetyService.ts` and its TypeScript
+declarations. The npm lock file pins the archive integrity.
 
 `read_file` accepts only an explicitly approved HarborStore content hash.
 The worker checks object availability and byte integrity, limits files to

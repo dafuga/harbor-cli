@@ -5,6 +5,7 @@ export declare class AgentWorker {
     private readonly network;
     private readonly now;
     private readonly store;
+    private readonly toolReviews;
     private readonly active;
     private sweeping;
     constructor(file: string, host: string, network: Network, now?: () => number);
@@ -17,14 +18,6 @@ export declare class AgentWorker {
     private log;
     private saveRun;
     snapshot(id?: string): {
-        identity: string | undefined;
-        currency: {
-            symbol: string;
-            precision: number;
-        };
-        models: import("./types.js").Model[];
-        specialties: readonly import("./types.js").SpecialtyManifest[];
-        feedbackPolicy: string;
         feedback: RunFeedback[];
         agents: {
             paid: number;
@@ -46,8 +39,29 @@ export declare class AgentWorker {
         routines: Routine[];
         runs: Run[];
         audit: AuditEntry[];
+        toolReviews?: (import("@dafuga01/harness-agent-safety").AgentToolReview & {
+            agentId: string;
+            runId: string;
+            content: string;
+        })[] | undefined;
+        identity: string | undefined;
+        currency: {
+            symbol: string;
+            precision: number;
+        };
+        models: import("./types.js").Model[];
+        specialties: readonly import("./types.js").SpecialtyManifest[];
+        feedbackPolicy: string;
         execution?: string | undefined;
         host: string;
+    };
+    pendingToolReviews(agentId: string): (import("@dafuga01/harness-agent-safety").AgentToolReview & {
+        agentId: string;
+        runId: string;
+        content: string;
+    })[];
+    decideToolReview(id: string, approved: boolean): {
+        accepted: boolean;
     };
     private executionAgent;
     private taskPrompt;

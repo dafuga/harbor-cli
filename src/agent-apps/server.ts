@@ -62,6 +62,12 @@ export function workerServer(worker: AgentWorker, token: string) {
       if (collection === 'state' && !action && request.method === 'GET') {
         return send(response, 200, worker.snapshot(id))
       }
+      if (collection === 'tool-reviews' && id) {
+        if (!action && request.method === 'GET') return send(response, 200, {reviews: worker.pendingToolReviews(id)})
+        if ((action === 'approve' || action === 'decline') && request.method === 'POST') {
+          return send(response, 202, worker.decideToolReview(id, action === 'approve'))
+        }
+      }
       if (collection === 'agents' && request.method === 'POST') {
         const data = await input(request)
         if (!id && !action) return send(response, 201, worker.createAgent(data))
