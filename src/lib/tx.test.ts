@@ -1,12 +1,13 @@
 import assert from 'node:assert/strict'
 import {execFile} from 'node:child_process'
+import {createHash} from 'node:crypto'
 import fs from 'node:fs/promises'
 import http from 'node:http'
 import type {AddressInfo} from 'node:net'
 import os from 'node:os'
 import path from 'node:path'
 import {fileURLToPath} from 'node:url'
-import {PrivateKey, SignedTransaction} from '@wharfkit/antelope'
+import {ABI, PrivateKey, Serializer, SignedTransaction} from '@wharfkit/antelope'
 import test, {type TestContext} from 'node:test'
 import {readContractNextId} from './tx.js'
 
@@ -204,6 +205,16 @@ async function signingFixture(t: TestContext) {
       case '/v1/chain/get_abi':
         response.end(JSON.stringify({account_name: body.account_name, abi: fixtureAbi(body.account_name)}))
         break
+      case '/v1/chain/get_raw_abi': {
+        const abi = Buffer.from(Serializer.encode({object: ABI.from(fixtureAbi(body.account_name))}).array)
+        response.end(JSON.stringify({
+          account_name: body.account_name,
+          code_hash: '00'.repeat(32),
+          abi_hash: createHash('sha256').update(abi).digest('hex'),
+          abi: abi.toString('base64'),
+        }))
+        break
+      }
       case '/v1/chain/send_transaction':
         requests.push(request.url)
         response.end(JSON.stringify({transaction_id: 'cd'.repeat(32), processed: {receipt: {status: 'executed'}}}))

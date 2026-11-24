@@ -8,7 +8,9 @@ import path from 'node:path'
 import test from 'node:test'
 import {fileURLToPath} from 'node:url'
 import {normalizeServiceName, sha256Bytes} from './artifacts.js'
+import {darwinReclaimableMemory} from './host-policy.js'
 import {buildRunPlan, renderRuntimeConfig} from './run.js'
+import {runtimeTarget} from './runtime-host.js'
 
 async function tempHome(): Promise<string> {
   return fs.mkdtemp(path.join(os.tmpdir(), 'harbor-run-'))
@@ -44,19 +46,52 @@ async function waitForHealth(port: number, child?: ReturnType<typeof spawn>, out
   throw new Error(`test daemon did not become healthy on ${port}\n${output?.() ?? ''}`)
 }
 
-test('buildRunPlan dry-run does not require an installed binary', async () => {
+test('Darwin memory admission counts reclaimable cache using the kernel page size', () => {
+  const stats = [
+    'Mach Virtual Memory Statistics: (page size of 16384 bytes)',
+    'Pages free:                              33539.',
+    'Pages speculative:                      122136.',
+    'File-backed pages:                     1424385.',
+    'Anonymous pages:                        896601.',
+  ]
+  assert.equal(darwinReclaimableMemory(stats.join('\n')), 23_886_626_816)
+  assert.equal(darwinReclaimableMemory(stats.slice(1).join('\n')), 0)
+})
+
+test('buildRunPlan dry-run does not require an installed binary', {skip: process.platform === 'win32'}, async () => {
+  const home = await tempHome()
+  const config = path.join(home, 'harbor-runtime.toml')
   const plan = await buildRunPlan(normalizeServiceName('router'), {
     dryRun: true,
     version: 'dev',
-    config: '/tmp/harbor-runtime.toml',
-    dataDir: '/tmp/harbor-runtime-data',
+    config,
+    dataDir: path.join(home, 'runtime-data'),
     port: 9213,
   })
 
   assert.equal(plan.service, 'router')
   assert.equal(plan.daemon, 'harbor-routerd')
   assert.equal(plan.port, 9213)
-  assert.deepEqual(plan.command, [plan.binary, '--config', '/tmp/harbor-runtime.toml'])
+  assert.deepEqual(plan.command, [plan.binary, '--config', config])
+  assert.equal(plan.limits.cpu_percent, 50)
+  assert.equal(plan.limits.memory_percent, 50)
+  assert.equal(plan.limits.gpu_percent, 50)
+  await assert.rejects(fs.access(config), {code: 'ENOENT'})
+})
+
+test('run plan reads existing runtime ports and protects the config from option conflicts', {skip: process.platform === 'win32'}, async () => {
+  const home = await tempHome()
+  const config = path.join(home, 'runtime.toml')
+  const dataDir = path.join(home, 'harbor#data')
+  const original = renderRuntimeConfig({dataDir, basePort: 9300})
+  await fs.writeFile(config, original)
+  const service = normalizeServiceName('aiinfer')
+  const plan = await buildRunPlan(service, {config, dryRun: true})
+  assert.equal(plan.port, 9317)
+  assert.equal(plan.data_dir, dataDir)
+  await assert.rejects(buildRunPlan(service, {config, dryRun: true, port: 9117}), /conflicts/)
+  await assert.rejects(buildRunPlan(service, {config, dryRun: true, cpuPercent: 0}), /--cpu-percent/)
+  assert.equal(await fs.readFile(config, 'utf8'), original)
 })
 
 test('renderRuntimeConfig sets base port and includes all service providers', () => {
@@ -76,7 +111,7 @@ test('renderRuntimeConfig sets base port and includes all service providers', ()
   assert.equal(config.includes('repo = "/tmp/harbor-history"'), true)
 })
 
-test('harbor run --source url downloads, installs, starts, logs, and stops', {timeout: 20_000}, async () => {
+test('harbor run --source url downloads, installs, starts, logs, and stops', {timeout: 20_000, skip: process.platform === 'win32'}, async () => {
   const harborHome = await tempHome()
   const port = await freePort()
   const fakeDaemon = Buffer.from(`#!/usr/bin/env node
@@ -156,9 +191,10 @@ process.on('SIGINT', () => server.close(() => process.exit(0)))
     child.kill('SIGTERM')
     const [code] = await once(child, 'exit') as [number | null, NodeJS.Signals | null]
     assert.equal(code, 0, output)
-    await fs.access(path.join(harborHome, 'bin', 'router', 'url-run-test', 'harbor-routerd'))
+    const install = path.join(harborHome, 'bin', 'router', 'url-run-test', runtimeTarget())
+    await fs.access(path.join(install, checksum, 'harbor-routerd'))
     await fs.access(path.join(harborHome, 'logs', 'router.log'))
-    assert.match(await fs.readFile(path.join(harborHome, 'artifacts.json'), 'utf8'), /url-run-test/)
+    assert.match(await fs.readFile(path.join(install, 'artifact.json'), 'utf8'), /url-run-test/)
   } finally {
     if (child.exitCode === null && child.signalCode === null) {
       child.kill('SIGKILL')

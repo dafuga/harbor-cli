@@ -13,12 +13,13 @@
     "!lib/**/*.test.*",
     "!lib/**/*.e2e.*",
     "src/lib/secure-enclave.swift",
-    "NOTICE"
+    "NOTICE",
+    "docs/runtime.md"
   ],
   "scripts": {
     "compile": "tsc",
     "check": "tsc --noEmit",
-    "test": "node --test lib/**/*.test.js",
+    "test": "node --test --test-concurrency=2 lib/**/*.test.js",
     "test:msig:e2e": "node lib/lib/harbor-msig.e2e.js",
     "pack:release": "npm run compile && npm pack",
     "prepublishOnly": "npm run compile"

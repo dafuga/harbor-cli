@@ -1,0 +1,283 @@
+name: Harbor Runtime
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      qualify_windows:
+        description: Run the WSL2 qualification when a Windows runner is available
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  cli:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { runner: ubuntu-22.04, target: linux-x64 }
+          - { runner: ubuntu-22.04-arm, target: linux-arm64 }
+          - { runner: macos-15-intel, target: macos-x64 }
+          - { runner: macos-15, target: macos-arm64 }
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Build and test CLI
+        run: |
+          npm ci
+          npm run compile
+          npm run check
+          npm test
+      - name: Package Node CLI
+        if: matrix.target == 'linux-x64'
+        run: |
+          mkdir -p cli-dist
+          npm pack --pack-destination cli-dist --ignore-scripts
+      - uses: actions/upload-artifact@v4
+        if: matrix.target == 'linux-x64'
+        with:
+          name: harbor-cli-package
+          path: cli-dist/
+          if-no-files-found: error
+
+  native:
+    if: github.event_name != 'pull_request' && (vars.HARBOR_NATIVE_ARTIFACTS == 'enabled' || startsWith(github.ref, 'refs/tags/v'))
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { runner: ubuntu-22.04, target: linux-x64 }
+          - { runner: ubuntu-22.04-arm, target: linux-arm64 }
+          - { runner: macos-15-intel, target: macos-x64 }
+          - { runner: macos-15, target: macos-arm64 }
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: dafuga/harbor-opportunities
+          ref: 9cd9fc3928a4130ea7e28984e5f6b758c8fd27eb
+          path: opportunities
+          token: ${{ secrets.HARBOR_OPPORTUNITIES_TOKEN }}
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: |
+          npm ci
+          npm run compile
+      - name: Install Linux dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libcurl4-openssl-dev libsodium-dev imagemagick fonts-dejavu-core
+          sudo loginctl enable-linger "$(id -un)"
+      - name: Install macOS dependencies
+        if: runner.os == 'macOS'
+        run: brew install libsodium imagemagick
+      - name: Build and package native daemons
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          if [[ "$RUNNER_OS" == Linux ]]; then
+            libdir="/usr/lib/$(gcc -print-multiarch)"
+            curl=(-DCURL_LIBRARY="$libdir/libcurl.so" -DCURL_INCLUDE_DIR="/usr/include/$(gcc -print-multiarch)")
+            sodium=(-DSODIUM_LIBRARY="$libdir/libsodium.a" -DSODIUM_INCLUDE_DIR=/usr/include)
+          else
+            curl=()
+            prefix="$(brew --prefix libsodium)"
+            sodium=(-DSODIUM_LIBRARY="$prefix/lib/libsodium.a" -DSODIUM_INCLUDE_DIR="$prefix/include")
+          fi
+          cmake -S opportunities -B daemon-build -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_DISABLE_FIND_PACKAGE_PkgConfig=ON '-DCMAKE_CXX_FLAGS=-include charconv' "${curl[@]}" "${sodium[@]}"
+          cmake --build daemon-build --parallel 2
+          node scripts/package-runtime.mjs daemon-build runtime-dist "$TARGET"
+      - name: Exercise service lifecycle and local inference
+        shell: bash
+        run: |
+          export HARBOR_DAEMON_DIR="$PWD/daemon-build"
+          export HARBOR_SMOKE_EVIDENCE="$PWD/runtime-evidence"
+          node scripts/runtime-smoke.mjs
+      - uses: actions/upload-artifact@v4
+        with:
+          name: harbor-runtime-${{ matrix.target }}
+          path: runtime-dist/
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        with:
+          name: harbor-evidence-${{ matrix.target }}
+          path: runtime-evidence/
+          if-no-files-found: error
+
+  node-linux-arm64:
+    if: github.event_name != 'pull_request' && (vars.HARBOR_NATIVE_ARTIFACTS == 'enabled' || startsWith(github.ref, 'refs/tags/v'))
+    runs-on: ubuntu-22.04-arm
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: dafuga/harbor
+          ref: fe4fa93c0f3104485af99ec350e71c7798fd89aa
+          path: node-source
+          token: ${{ secrets.HARBOR_NODE_SOURCE_TOKEN }}
+          submodules: recursive
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install node build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake git libcurl4-openssl-dev libgmp-dev libssl-dev ninja-build python3-numpy zlib1g-dev
+          git clone --branch 0.15.0 --depth 1 https://github.com/open-quantum-safe/liboqs.git "$RUNNER_TEMP/liboqs"
+          cmake -S "$RUNNER_TEMP/liboqs" -B "$RUNNER_TEMP/liboqs/build" -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
+            -DOQS_BUILD_ONLY_LIB=ON -DOQS_DIST_BUILD=ON
+          cmake --build "$RUNNER_TEMP/liboqs/build" --parallel 2
+          sudo cmake --install "$RUNNER_TEMP/liboqs/build"
+      - name: Build and verify the Linux ARM64 node
+        run: |
+          bash scripts/build-nodeos.sh node-source node-build node-dist -G Ninja
+          (cd node-dist && sha256sum --check nodeos-linux-arm64.sha256)
+          npm ci
+          npm run compile
+          sudo loginctl enable-linger "$(id -un)"
+          HARBOR_NODEOS_ARTIFACT="$PWD/node-dist/nodeos-linux-arm64" node scripts/node-smoke.mjs
+          sudo env HARBOR_NODEOS_ARTIFACT="$PWD/node-dist/nodeos-linux-arm64" "$(command -v node)" scripts/node-smoke.mjs --system
+      - uses: actions/upload-artifact@v4
+        with:
+          name: harbor-runtime-node-linux-arm64
+          path: node-dist/
+          if-no-files-found: error
+
+  windows:
+    if: github.event_name == 'workflow_dispatch' && inputs.qualify_windows
+    needs: native
+    runs-on: windows-2025
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: actions/download-artifact@v4
+        with:
+          name: harbor-runtime-linux-x64
+          path: runtime-dist
+      - uses: Vampire/setup-wsl@v7
+        with:
+          distribution: Ubuntu-24.04
+          wsl-version: 2
+          wsl-shell-user: harbor
+          additional-packages: git curl libcurl4t64 imagemagick fonts-dejavu-core
+          wsl-conf: |
+            [boot]
+            systemd=true
+            [user]
+            default=harbor
+      - name: Build Windows CLI and verify WSL2 discovery
+        shell: pwsh
+        run: |
+          node -p process.version | Set-Content -Encoding ascii .ci-node-version
+          npm ci
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          npm run compile
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          node --test lib/lib/wsl.test.js
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          node lib/index.js doctor --json --strict
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          wsl.exe --terminate Ubuntu-24.04
+      - name: Provision WSL runtime
+        shell: wsl-bash -u root {0}
+        run: |
+          version="$(tr -d '\r\n' < .ci-node-version)"
+          tarball="node-$version-linux-x64.tar.xz"
+          work="$(mktemp -d)"
+          (
+            cd "$work"
+            curl -fsSLO "https://nodejs.org/dist/$version/$tarball"
+            curl -fsSLO "https://nodejs.org/dist/$version/SHASUMS256.txt"
+            grep -F "  $tarball" SHASUMS256.txt | sha256sum --check
+            tar -xJf "$tarball" -C /usr/local --strip-components=1
+          )
+          rm -rf "$work"
+          loginctl enable-linger harbor
+          printf '%s\n' '#!/bin/sh' 'exec /usr/local/bin/node /home/harbor/harbor-cli/lib/index.js "$@"' > /usr/local/bin/harbor
+          chmod 755 /usr/local/bin/harbor
+      - name: Build and run the service lifecycle in WSL2
+        shell: wsl-bash {0}
+        run: |
+          workspace="$PWD"
+          mkdir -p "$HOME/harbor-cli"
+          tar --exclude=node_modules --exclude=.git -cf - . | tar -xf - -C "$HOME/harbor-cli"
+          cd "$HOME/harbor-cli"
+          npm ci
+          npm run compile
+          npm test
+          mkdir -p daemon-build
+          install -m 755 runtime-dist/harbor-aiinferd-linux-x64 daemon-build/harbor-aiinferd
+          export HARBOR_DAEMON_DIR="$PWD/daemon-build"
+          export HARBOR_SMOKE_EVIDENCE="$workspace/runtime-evidence"
+          node scripts/runtime-smoke.mjs
+      - name: Exercise Windows forwarding
+        shell: pwsh
+        run: |
+          $env:HARBOR_WSL_DISTRO = 'Ubuntu-24.04'
+          $env:HARBOR_WSL_CLI = '/usr/local/bin/harbor'
+          $plan = node lib/index.js run aiinfer --dry-run | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0 -or $plan.target -ne 'linux-x64') { throw 'Windows run did not select the Linux artifact' }
+          $status = node lib/index.js service status aiinfer --json | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0 -or $status.manager -ne 'systemd') { throw 'Windows service did not reach systemd' }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: harbor-evidence-windows-wsl2
+          path: runtime-evidence/
+          if-no-files-found: error
+
+  release:
+    needs: [cli, native, node-linux-arm64]
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: harbor-runtime-*
+          path: release
+          merge-multiple: true
+      - uses: actions/download-artifact@v4
+        with:
+          name: harbor-cli-package
+          path: release
+      - name: Publish validated artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          cd release
+          { cat SHASUMS256-*.txt nodeos-linux-arm64.sha256; sha256sum *.tgz; } | sort > SHASUMS256.txt
+          sha256sum --check SHASUMS256.txt
+          rm SHASUMS256-*.txt
+          gh release create "$TAG" ./* --verify-tag --generate-notes
