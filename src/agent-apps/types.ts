@@ -138,7 +138,7 @@ export interface AuditEntry {
 
 export interface Delivery {
   text: string
-  calls: ToolCall[]
+  calls: unknown[]
   paid: number | null
 }
 

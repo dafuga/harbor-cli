@@ -39,7 +39,7 @@ export declare class HarborNetwork implements Network {
     execute(input: Parameters<Network['execute']>[0]): Promise<{
         paid: number | null;
         text: string;
-        calls: ToolCall[];
+        calls: any[];
     }>;
     reconcile(run: Run, _agent: Agent, signal?: AbortSignal): Promise<number | null>;
     verify(call: ToolCall, context: Parameters<Network['verify']>[1], signal: AbortSignal): Promise<string>;
